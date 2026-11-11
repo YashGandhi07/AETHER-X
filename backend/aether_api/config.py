@@ -4,6 +4,9 @@
                                (default: the local Next.js dev server)
     AETHER_ENGINE_TIMEOUT_S    seconds before an engine call is killed (default 10)
     AETHER_LOG_LEVEL           DEBUG, INFO, WARNING or ERROR (default INFO)
+    AETHER_ENABLE_BENCHMARKS   1/0: allow POST /api/v1/benchmarks/run from
+                               localhost (default 1; never reachable remotely)
+    AETHER_BENCHMARK_TIMEOUT_S seconds before a benchmark run is killed (default 60)
 
 Invalid values fail fast with ConfigurationError instead of starting a
 misconfigured service.
@@ -32,6 +35,11 @@ class Settings:
     cors_origins: tuple[str, ...] = DEFAULT_CORS_ORIGINS
     engine_timeout_s: float = 10.0
     log_level: str = "INFO"
+    benchmarks_enabled: bool = True
+    # The slowest request the API allows (row_sums_column_major, n = 4096,
+    # 20 warm-up + 100 measured runs) took 5.32 s on an Apple M5 (Section 3.2);
+    # 60 s leaves >10x headroom for slower machines.
+    benchmark_timeout_s: float = 60.0
 
     def __post_init__(self) -> None:
         for origin in self.cors_origins:
@@ -43,6 +51,9 @@ class Settings:
             raise ConfigurationError(f"engine timeout must be in (0, 300] s, got {self.engine_timeout_s}")
         if self.log_level not in _LOG_LEVELS:
             raise ConfigurationError(f"log level must be one of {sorted(_LOG_LEVELS)}, got {self.log_level!r}")
+        if not (math.isfinite(self.benchmark_timeout_s) and 0 < self.benchmark_timeout_s <= 600):
+            raise ConfigurationError(
+                f"benchmark timeout must be in (0, 600] s, got {self.benchmark_timeout_s}")
 
     @classmethod
     def from_environment(cls, environ: Mapping[str, str] = os.environ) -> Settings:
@@ -56,4 +67,15 @@ class Settings:
                 raise ConfigurationError(f"AETHER_ENGINE_TIMEOUT_S is not a number: {timeout!r}") from None
         if (level := environ.get("AETHER_LOG_LEVEL")) is not None:
             values["log_level"] = level.strip().upper()
+        if (enabled := environ.get("AETHER_ENABLE_BENCHMARKS")) is not None:
+            flag = enabled.strip().lower()
+            if flag not in {"1", "0", "true", "false"}:
+                raise ConfigurationError(f"AETHER_ENABLE_BENCHMARKS must be 1/0/true/false, got {enabled!r}")
+            values["benchmarks_enabled"] = flag in {"1", "true"}
+        if (bench_timeout := environ.get("AETHER_BENCHMARK_TIMEOUT_S")) is not None:
+            try:
+                values["benchmark_timeout_s"] = float(bench_timeout)
+            except ValueError:
+                raise ConfigurationError(
+                    f"AETHER_BENCHMARK_TIMEOUT_S is not a number: {bench_timeout!r}") from None
         return cls(**values)  # type: ignore[arg-type]

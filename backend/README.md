@@ -38,6 +38,57 @@ Interactive API docs: http://127.0.0.1:8000/docs (OpenAPI schema at `/openapi.js
 | `GET /api/v1/health` | `status` (`ok`, or `degraded` if the C++ engine is not built), `service`, `version`, `engine_available`. Never runs the engine. |
 | `GET /api/v1/system` | Host hardware and engine build metadata from the C++ collector (`aether_system_info`, no benchmarks). Collected once per process and cached. `null` means the platform could not report a value. |
 
+### `POST /api/v1/benchmarks/run` (local development only)
+
+Runs **one predefined workload** in the real C++ engine (`cpp/build/aether_run_benchmark`)
+and returns every measured sample, summary statistics, the configuration used, and
+the hardware and build metadata of the machine that ran it.
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/benchmarks/run \
+     -H 'Content-Type: application/json' \
+     -d '{"workload": "vector_add_parallel", "size": 1048576, "threads": 4, "warmup_runs": 3, "measured_runs": 15}'
+```
+
+| Field | Type | Default | Allowed |
+|---|---|---|---|
+| `workload` | string | required | `vector_add`, `vector_add_parallel`, `row_sums_row_major`, `row_sums_column_major` |
+| `size` | integer | required | vector workloads: elements, 1 – 16,777,216 (2^24); `row_sums_*`: matrix dimension n of n × n, 1 – 4096 |
+| `threads` | integer | 1 | `vector_add_parallel`: 1 – logical CPUs of the host; all others: exactly 1 |
+| `warmup_runs` | integer | 3 | 0 – 20 (warm-up also always lasts ≥ 100 ms) |
+| `measured_runs` | integer | 10 | 1 – 100 |
+
+Response (`200`): `status: "succeeded"`, `run_id`, `generated_at_utc`, `time_unit: "ms"`,
+`wall_time_s`, the normalized `request`, `result` (`experiment_id`, `workload`,
+`input_size` (elements processed, n·n for matrices), `thread_count` actually used,
+`config`, `warmup_runs_executed`, `iterations_per_sample`, `statistics`
+{count, min, max, mean, median, stddev, p95}, `samples_ms`), `host` and `engine_build`.
+
+**Behaviour and limitations**
+
+* **Localhost only.** Requests from any non-loopback client get `403 local_only`;
+  browser requests with an `Origin` outside `AETHER_CORS_ORIGINS` get
+  `403 origin_not_allowed`. There is no authentication yet, so do not expose
+  the server beyond `127.0.0.1`. `AETHER_ENABLE_BENCHMARKS=0` disables the
+  endpoint (`403 benchmarks_disabled`).
+* **Strict input.** Unknown fields, strings/floats/booleans where integers are
+  expected, and non-JSON bodies are rejected with `422 validation_error`. The
+  engine never receives a request value other than these validated fields:
+  no commands, scripts or paths.
+* **One run at a time.** A request while another benchmark runs gets
+  `429 benchmark_busy` with `Retry-After: 5` (concurrent runs would also distort
+  each other's timings). Note that `curl --retry` honours this automatically.
+* **Timeout.** Runs are killed after `AETHER_BENCHMARK_TIMEOUT_S` (default 60 s;
+  the slowest allowed request measured 5.32 s on an Apple M5) → `504 engine_timeout`.
+* **Verified results only.** The C++ engine checks every output against an
+  independent reference and writes no report if verification fails
+  (`502 engine_failed`). A report that is malformed or does not match the request
+  is rejected (`502 engine_bad_output`).
+* **Not a browser API yet.** CORS allows only `GET`, so web pages cannot call
+  this endpoint until authentication is added.
+* Timings depend on the machine and its current load; repeat runs and compare
+  medians rather than single values.
+
 Errors always use one shape, with the request id also sent in the `X-Request-ID` header:
 
 ```json
@@ -46,8 +97,10 @@ Errors always use one shape, with the request id also sent in the `X-Request-ID`
 
 | Code | HTTP | Cause |
 |---|---|---|
-| `engine_not_built` | 503 | `cpp/build/aether_system_info` is missing |
-| `engine_timeout` | 504 | the engine exceeded `AETHER_ENGINE_TIMEOUT_S` |
+| `engine_not_built` | 503 | an engine executable in `cpp/build` is missing |
+| `engine_timeout` | 504 | the engine exceeded its timeout |
+| `local_only` / `origin_not_allowed` / `benchmarks_disabled` | 403 | benchmark endpoint access refused |
+| `benchmark_busy` | 429 | another benchmark is running (`Retry-After: 5`) |
 | `engine_failed` / `engine_bad_output` | 502 | non-zero exit / invalid JSON from the engine |
 | `not_found` / `method_not_allowed` / `validation_error` | 404 / 405 / 422 | client errors |
 | `internal_error` | 500 | anything unexpected (details are logged server-side only) |
@@ -59,6 +112,8 @@ Errors always use one shape, with the request id also sent in the `X-Request-ID`
 | `AETHER_CORS_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | explicit `scheme://host[:port]` list; `*` is rejected |
 | `AETHER_ENGINE_TIMEOUT_S` | `10` | must be in (0, 300] |
 | `AETHER_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `AETHER_ENABLE_BENCHMARKS` | `1` | `1`/`0`/`true`/`false`; the endpoint is localhost-only either way |
+| `AETHER_BENCHMARK_TIMEOUT_S` | `60` | must be in (0, 600] |
 
 Invalid values stop the service at startup. CORS allows only `GET`, without
 credentials, because the API has no authentication yet.

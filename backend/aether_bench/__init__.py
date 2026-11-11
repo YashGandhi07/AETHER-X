@@ -10,8 +10,12 @@ from .errors import (
 from .runner import (
     DEFAULT_TIMEOUT_S,
     KNOWN_EXECUTABLES,
+    MATRIX_WORKLOADS,
+    WORKLOADS,
+    BenchmarkSpec,
     ProfileRun,
     resolve_executable,
+    run_benchmark,
     run_cpu_profile,
     run_system_info,
 )
@@ -29,6 +33,10 @@ from .schema import (
 )
 
 __all__ = [
+    "BenchmarkSpec",
+    "MATRIX_WORKLOADS",
+    "WORKLOADS",
+    "run_benchmark",
     "BuildInfo",
     "CoreType",
     "SYSTEM_INFO_SCHEMA_ID",

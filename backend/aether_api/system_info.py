@@ -10,7 +10,7 @@ from __future__ import annotations
 import threading
 from typing import Callable, Optional
 
-from aether_bench import SystemReport, run_system_info
+from aether_bench import BuildInfo, SystemInfo, SystemReport, run_system_info
 
 from .models import CoreTypeModel, EngineBuildModel, HostModel, SystemResponse
 
@@ -39,30 +39,36 @@ class SystemInfoProvider:
 
 
 def to_response(report: SystemReport) -> SystemResponse:
-    """Copies the intended fields field-by-field into the public models."""
-    s, b = report.system, report.build
-    return SystemResponse(
-        collected_at_utc=report.generated_at_utc,
-        host=HostModel(
-            os_family=s.os_family,
-            os_version=s.os_version,
-            os_build=s.os_build,
-            kernel_release=s.kernel_release,
-            architecture=s.architecture,
-            process_translated=s.process_translated,
-            cpu_model=s.cpu_model,
-            logical_cpus=s.logical_cpus,
-            physical_cpus=s.physical_cpus,
-            core_types=[CoreTypeModel(name=c.name, physical_cpus=c.physical_cpus) for c in s.core_types],
-            cache_line_bytes=s.cache_line_bytes,
-            memory_bytes=s.memory_bytes,
-        ),
-        engine_build=EngineBuildModel(
-            compiler_id=b.compiler_id,
-            compiler_version=b.compiler_version,
-            cxx_standard=b.cxx_standard,
-            build_type=b.build_type,
-            cmake_cxx_flags=b.cmake_cxx_flags,
-            assertions_enabled=b.assertions_enabled,
-        ),
+    return SystemResponse(collected_at_utc=report.generated_at_utc,
+                          host=host_model(report.system), engine_build=engine_build_model(report.build))
+
+
+# Field-by-field copies into the public models: only intended metadata leaves
+# the service, even if the engine reports more in the future.
+
+def host_model(s: SystemInfo) -> HostModel:
+    return HostModel(
+        os_family=s.os_family,
+        os_version=s.os_version,
+        os_build=s.os_build,
+        kernel_release=s.kernel_release,
+        architecture=s.architecture,
+        process_translated=s.process_translated,
+        cpu_model=s.cpu_model,
+        logical_cpus=s.logical_cpus,
+        physical_cpus=s.physical_cpus,
+        core_types=[CoreTypeModel(name=c.name, physical_cpus=c.physical_cpus) for c in s.core_types],
+        cache_line_bytes=s.cache_line_bytes,
+        memory_bytes=s.memory_bytes,
+    )
+
+
+def engine_build_model(b: BuildInfo) -> EngineBuildModel:
+    return EngineBuildModel(
+        compiler_id=b.compiler_id,
+        compiler_version=b.compiler_version,
+        cxx_standard=b.cxx_standard,
+        build_type=b.build_type,
+        cmake_cxx_flags=b.cmake_cxx_flags,
+        assertions_enabled=b.assertions_enabled,
     )

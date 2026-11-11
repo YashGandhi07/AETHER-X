@@ -18,6 +18,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import __version__
+from .benchmarks import BenchmarkService
 from .config import Settings
 from .errors import register_exception_handlers
 from .logging_config import configure_logging
@@ -32,7 +33,8 @@ _SAFE_REQUEST_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")
 
 
 def create_app(settings: Optional[Settings] = None,
-               system_info_provider: Optional[SystemInfoProvider] = None) -> FastAPI:
+               system_info_provider: Optional[SystemInfoProvider] = None,
+               benchmark_service: Optional[BenchmarkService] = None) -> FastAPI:
     settings = settings or Settings.from_environment()
     configure_logging(settings.log_level)
 
@@ -40,6 +42,8 @@ def create_app(settings: Optional[Settings] = None,
     app.state.settings = settings
     app.state.system_info_provider = (
         system_info_provider or SystemInfoProvider.from_engine(settings.engine_timeout_s))
+    app.state.benchmark_service = (
+        benchmark_service or BenchmarkService.from_engine(settings.benchmark_timeout_s))
 
     # Read-only API without authentication yet: no credentials, GET only,
     # explicitly listed origins (validated in Settings; '*' is rejected).

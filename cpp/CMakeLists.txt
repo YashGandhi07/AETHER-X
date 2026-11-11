@@ -37,6 +37,7 @@ add_library(aether_core STATIC
     src/profiling.cpp
     src/experiment_id.cpp
     src/system_info.cpp
+    src/workloads.cpp
 )
 # Hardware detection: one platform implementation per OS (see src/platform/platform.hpp).
 if(APPLE)
@@ -85,6 +86,10 @@ add_executable(aether_system_info tools/system_info.cpp)
 target_link_libraries(aether_system_info PRIVATE aether_core)
 aether_enable_warnings(aether_system_info)
 
+add_executable(aether_run_benchmark tools/run_benchmark.cpp)
+target_link_libraries(aether_run_benchmark PRIVATE aether_core)
+aether_enable_warnings(aether_run_benchmark)
+
 enable_testing()
 add_executable(aether_core_tests tests/core_tests.cpp)
 target_link_libraries(aether_core_tests PRIVATE aether_core)
@@ -101,3 +106,8 @@ add_executable(aether_system_info_tests tests/system_info_tests.cpp)
 target_link_libraries(aether_system_info_tests PRIVATE aether_core)
 aether_enable_warnings(aether_system_info_tests)
 add_test(NAME aether_system_info_tests COMMAND aether_system_info_tests)
+
+add_executable(aether_workloads_tests tests/workloads_tests.cpp)
+target_link_libraries(aether_workloads_tests PRIVATE aether_core)
+aether_enable_warnings(aether_workloads_tests)
+add_test(NAME aether_workloads_tests COMMAND aether_workloads_tests)

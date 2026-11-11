@@ -36,7 +36,18 @@ DEFAULT_BUILD_DIR = REPOSITORY_ROOT / "cpp" / "build"
 KNOWN_EXECUTABLES: dict[str, str] = {
     "cpu_profile": "aether_cpu_profile",
     "system_info": "aether_system_info",
+    "run_benchmark": "aether_run_benchmark",
 }
+
+# Workload names accepted by aether_run_benchmark (cpp/src/workloads.cpp).
+# Nothing outside this tuple is ever passed to the engine.
+WORKLOADS: tuple[str, ...] = (
+    "vector_add",
+    "vector_add_parallel",
+    "row_sums_row_major",
+    "row_sums_column_major",
+)
+MATRIX_WORKLOADS = frozenset({"row_sums_row_major", "row_sums_column_major"})
 
 # A full profile takes ~3 s on an Apple M5 (Section 2.6); the default leaves a
 # wide margin for slower machines without letting a hung process block forever.
@@ -61,6 +72,34 @@ class ProfileRun:
     stdout: str
     stderr: str
     wall_time_s: float
+
+
+@dataclass(frozen=True)
+class BenchmarkSpec:
+    """One workload run. Types and the workload name are checked here; numeric
+    limits are policy (enforced by callers such as the API) and are checked
+    again by the C++ engine's own hard limits."""
+
+    workload: str
+    size: int  # elements, or matrix dimension n for row_sums_* (n x n)
+    threads: int = 1
+    warmup_runs: int = 3
+    measured_runs: int = 10
+
+    def __post_init__(self) -> None:
+        if self.workload not in WORKLOADS:
+            raise ValueError(f"unknown workload {self.workload!r}; known: {list(WORKLOADS)}")
+        for name in ("size", "threads", "warmup_runs", "measured_runs"):
+            value = getattr(self, name)
+            # bool is an int subclass; True must not become "--size 1".
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer, got {value!r}")
+
+    def to_arguments(self, report_path: Path) -> list[str]:
+        """The exact argv tail for aether_run_benchmark: fixed flags, int values."""
+        return ["--workload", self.workload, "--size", str(self.size),
+                "--threads", str(self.threads), "--warmup-runs", str(self.warmup_runs),
+                "--measured-runs", str(self.measured_runs), "--output", str(report_path)]
 
 
 def resolve_executable(name: str, build_dir: Optional[Path] = None) -> Path:
@@ -110,6 +149,46 @@ def run_cpu_profile(
     return ProfileRun(
         report=report, stdout=completed.stdout, stderr=completed.stderr, wall_time_s=wall_time_s
     )
+
+
+def run_benchmark(
+    spec: BenchmarkSpec, *, timeout_s: float = DEFAULT_TIMEOUT_S, build_dir: Optional[Path] = None
+) -> ProfileRun:
+    """Runs one workload through ``aether_run_benchmark`` and returns its report.
+
+    Raises the same exceptions as run_cpu_profile. In addition, a report whose
+    single record does not match `spec` (wrong workload, size, run counts, or
+    more threads than requested) is rejected with BenchmarkOutputError.
+    """
+    _validate_timeout(timeout_s)
+    executable = resolve_executable("run_benchmark", build_dir)
+    with tempfile.TemporaryDirectory(prefix="aether_benchmark_") as workdir:
+        report_path = Path(workdir) / "report.json"
+        completed, wall_time_s = _execute(
+            [str(executable), *spec.to_arguments(report_path)], timeout_s, workdir)
+        report = parse_report(_read_report(report_path))
+    _check_matches_spec(report, spec)
+    return ProfileRun(
+        report=report, stdout=completed.stdout, stderr=completed.stderr, wall_time_s=wall_time_s
+    )
+
+
+def _check_matches_spec(report: ProfileReport, spec: BenchmarkSpec) -> None:
+    if len(report.records) != 1:
+        raise BenchmarkOutputError(f"expected exactly 1 record, got {len(report.records)}")
+    record = report.records[0]
+    expected_input = spec.size * spec.size if spec.workload in MATRIX_WORKLOADS else spec.size
+    mismatches = [
+        name for name, ok in [
+            ("workload", record.workload == spec.workload),
+            ("input_size", record.input_size == expected_input),
+            ("thread_count", 1 <= record.thread_count <= spec.threads),  # may be capped
+            ("warmup_runs", record.config.warmup_runs == spec.warmup_runs),
+            ("measured_runs", record.config.measured_runs == spec.measured_runs),
+        ] if not ok
+    ]
+    if mismatches:
+        raise BenchmarkOutputError(f"report does not match the request: {', '.join(mismatches)}")
 
 
 def run_system_info(

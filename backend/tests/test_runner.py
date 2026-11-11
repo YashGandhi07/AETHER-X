@@ -17,7 +17,9 @@ from aether_bench import (
     BenchmarkProcessError,
     BenchmarkTimeoutError,
     ExecutableNotFoundError,
+    BenchmarkSpec,
     resolve_executable,
+    run_benchmark,
     run_cpu_profile,
     run_system_info,
 )
@@ -195,6 +197,74 @@ print({json.dumps(json.dumps(document))})
         self.install_system_info("time.sleep(30)\n")
         with self.assertRaises(BenchmarkTimeoutError):
             run_system_info(timeout_s=0.5, build_dir=self.build_dir)
+
+
+class BenchmarkSpecTests(unittest.TestCase):
+    def test_valid_spec_builds_exact_arguments(self) -> None:
+        spec = BenchmarkSpec("vector_add_parallel", size=4096, threads=2, warmup_runs=1, measured_runs=5)
+        self.assertEqual(spec.to_arguments(Path("/tmp/r.json")), [
+            "--workload", "vector_add_parallel", "--size", "4096", "--threads", "2",
+            "--warmup-runs", "1", "--measured-runs", "5", "--output", "/tmp/r.json"])
+
+    def test_invalid_specs_rejected(self) -> None:
+        for kwargs in [
+            {"workload": "sh", "size": 1},
+            {"workload": "vector_add; rm -rf /", "size": 1},
+            {"workload": "vector_add", "size": -1},
+            {"workload": "vector_add", "size": True},
+            {"workload": "vector_add", "size": 4.0},
+            {"workload": "vector_add", "size": "4"},
+        ]:
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                BenchmarkSpec(**kwargs)
+
+
+class RunBenchmarkTests(RunnerTestCase):
+    SPEC = BenchmarkSpec("vector_add", size=4096, threads=1, warmup_runs=3, measured_runs=4)
+
+    def install_run_benchmark(self, record_overrides: dict, records: int = 1, exit_code: int = 0) -> None:
+        report = synthetic_report()
+        record = report["results"][0]  # 4 samples
+        record.update({"workload": "vector_add", "input_size": 4096, "thread_count": 1,
+                       **record_overrides})
+        report["results"] = [record] * records
+        script = write_fake_profiler(self.build_dir, f"""
+args = sys.argv[1:]
+report_path = args[args.index("--output") + 1]
+print(json.dumps(args))
+with open(report_path, "w") as f:
+    f.write({json.dumps(json.dumps(report))})
+sys.exit({exit_code})
+""")
+        script.rename(self.build_dir / "aether_run_benchmark")
+
+    def test_passes_exact_arguments_and_returns_report(self) -> None:
+        self.install_run_benchmark({})
+        run = run_benchmark(self.SPEC, timeout_s=10.0, build_dir=self.build_dir)
+        argv = json.loads(run.stdout)
+        self.assertEqual(argv[:10], ["--workload", "vector_add", "--size", "4096", "--threads", "1",
+                                     "--warmup-runs", "3", "--measured-runs", "4"])
+        self.assertEqual(argv[10], "--output")
+        self.assertEqual(run.report.records[0].workload, "vector_add")
+
+    def test_report_must_match_request(self) -> None:
+        for overrides, records, expected in [
+            ({"workload": "vector_add_parallel"}, 1, "workload"),
+            ({"input_size": 8192}, 1, "input_size"),
+            ({"thread_count": 4}, 1, "thread_count"),
+            ({}, 0, "exactly 1 record"),
+        ]:
+            with self.subTest(expected=expected):
+                self.install_run_benchmark(overrides, records)
+                with self.assertRaises(BenchmarkOutputError) as caught:
+                    run_benchmark(self.SPEC, timeout_s=10.0, build_dir=self.build_dir)
+                self.assertIn(expected, str(caught.exception))
+
+    def test_engine_rejection_is_a_process_error(self) -> None:
+        self.install_run_benchmark({}, exit_code=2)
+        with self.assertRaises(BenchmarkProcessError) as caught:
+            run_benchmark(self.SPEC, timeout_s=10.0, build_dir=self.build_dir)
+        self.assertEqual(caught.exception.returncode, 2)
 
 
 if __name__ == "__main__":
