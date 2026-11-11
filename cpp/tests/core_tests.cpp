@@ -1,14 +1,10 @@
-// Correctness tests for aether_core. Self-contained (no test framework
-// dependency yet); registered with CTest, exits non-zero on any failure.
+// Correctness tests for the aether_core kernels and benchmark utilities.
 
 #include <algorithm>
 #include <cstddef>
-#include <iostream>
 #include <limits>
-#include <source_location>
 #include <span>
 #include <stdexcept>
-#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -18,32 +14,12 @@
 #include "aether/parallel.hpp"
 #include "aether/traversal.hpp"
 #include "aether/vector_add.hpp"
+#include "test_harness.hpp"
 
 namespace {
 
-int g_failures = 0;
-
-void check(bool condition, std::string_view description,
-           std::source_location where = std::source_location::current()) {
-    if (!condition) {
-        ++g_failures;
-        std::cerr << "  " << where.file_name() << ':' << where.line() << ": FAILED: " << description
-                  << '\n';
-    }
-}
-
-template <typename Exception, typename Fn>
-void check_throws(Fn&& fn, std::string_view description,
-                  std::source_location where = std::source_location::current()) {
-    bool threw_expected = false;
-    try {
-        fn();
-    } catch (const Exception&) {
-        threw_expected = true;
-    } catch (...) {
-    }
-    check(threw_expected, description, where);
-}
+using aether::test::check;
+using aether::test::check_throws;
 
 // ---------- vector_add ----------
 
@@ -410,11 +386,7 @@ void test_parallel_edge_cases() {
 }  // namespace
 
 int main() {
-    struct TestCase {
-        std::string_view name;
-        void (*fn)();
-    };
-    constexpr TestCase kTests[] = {
+    constexpr aether::test::TestCase kTests[] = {
         {"vector_add: element-wise sums", test_adds_elementwise},
         {"vector_add: empty arrays", test_empty_arrays},
         {"vector_add: mismatched sizes", test_mismatched_sizes_throw},
@@ -437,16 +409,5 @@ int main() {
         {"parallel: matches sequential", test_parallel_matches_sequential},
         {"parallel: edge cases and validation", test_parallel_edge_cases},
     };
-
-    int failed_tests = 0;
-    for (const auto& test : kTests) {
-        const int failures_before = g_failures;
-        test.fn();
-        const bool passed = g_failures == failures_before;
-        failed_tests += passed ? 0 : 1;
-        std::cout << (passed ? "[PASS] " : "[FAIL] ") << test.name << '\n';
-    }
-    std::cout << (std::size(kTests) - static_cast<std::size_t>(failed_tests)) << '/'
-              << std::size(kTests) << " tests passed\n";
-    return failed_tests == 0 ? 0 : 1;
+    return aether::test::run_tests(kTests);
 }
