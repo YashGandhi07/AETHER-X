@@ -33,8 +33,12 @@ add_library(aether_core STATIC
     src/benchmark.cpp
     src/matrix.cpp
     src/traversal.cpp
+    src/parallel.cpp
 )
 target_include_directories(aether_core PUBLIC include)
+# std::thread needs the platform thread library (-pthread on Linux; a no-op on macOS).
+find_package(Threads REQUIRED)
+target_link_libraries(aether_core PUBLIC Threads::Threads)
 aether_enable_warnings(aether_core)
 
 add_executable(aether_engine src/main.cpp)
@@ -49,6 +53,11 @@ add_executable(aether_matrix_traversal_bench bench/matrix_traversal_bench.cpp)
 target_link_libraries(aether_matrix_traversal_bench PRIVATE aether_core)
 target_compile_definitions(aether_matrix_traversal_bench PRIVATE AETHER_BUILD_TYPE="$<CONFIG>")
 aether_enable_warnings(aether_matrix_traversal_bench)
+
+add_executable(aether_parallel_vector_add_bench bench/parallel_vector_add_bench.cpp)
+target_link_libraries(aether_parallel_vector_add_bench PRIVATE aether_core)
+target_compile_definitions(aether_parallel_vector_add_bench PRIVATE AETHER_BUILD_TYPE="$<CONFIG>")
+aether_enable_warnings(aether_parallel_vector_add_bench)
 
 enable_testing()
 add_executable(aether_core_tests tests/core_tests.cpp)

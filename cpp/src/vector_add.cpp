@@ -1,9 +1,10 @@
 #include "aether/vector_add.hpp"
 
 #include <cmath>
-#include <functional>
 #include <stdexcept>
 #include <string>
+
+#include "aether/span_utils.hpp"
 
 namespace aether {
 namespace {
@@ -14,16 +15,6 @@ void require_equal_sizes(const char* caller, std::size_t a, std::size_t b, std::
                                     ", b=" + std::to_string(b) + ", out=" + std::to_string(out) +
                                     ")");
     }
-}
-
-// True if the ranges share at least one element. std::less gives a total order
-// over pointers; the built-in < is unspecified for pointers into unrelated arrays.
-bool ranges_overlap(std::span<const float> x, std::span<const float> y) {
-    if (x.empty() || y.empty()) {
-        return false;
-    }
-    const std::less<const float*> less;
-    return less(x.data(), y.data() + y.size()) && less(y.data(), x.data() + x.size());
 }
 
 // An offset overlap would let a write to out[i] clobber an input element that

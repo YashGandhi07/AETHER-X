@@ -2,22 +2,14 @@
 
 #include <algorithm>
 #include <cmath>
-#include <functional>
 #include <limits>
 #include <stdexcept>
 #include <string>
 
+#include "aether/span_utils.hpp"
+
 namespace aether {
 namespace {
-
-// Same idea as the check in vector_add.cpp: std::less gives a total pointer order.
-bool ranges_overlap(std::span<const float> x, std::span<const float> y) {
-    if (x.empty() || y.empty()) {
-        return false;
-    }
-    const std::less<const float*> less;
-    return less(x.data(), y.data() + y.size()) && less(y.data(), x.data() + x.size());
-}
 
 void validate_output(const char* caller, const Matrix& m, std::span<const float> sums) {
     if (sums.size() != m.rows()) {

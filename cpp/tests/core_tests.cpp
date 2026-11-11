@@ -1,6 +1,7 @@
 // Correctness tests for aether_core. Self-contained (no test framework
 // dependency yet); registered with CTest, exits non-zero on any failure.
 
+#include <algorithm>
 #include <cstddef>
 #include <iostream>
 #include <limits>
@@ -8,11 +9,13 @@
 #include <span>
 #include <stdexcept>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include "aether/benchmark.hpp"
 #include "aether/deterministic_data.hpp"
 #include "aether/matrix.hpp"
+#include "aether/parallel.hpp"
 #include "aether/traversal.hpp"
 #include "aether/vector_add.hpp"
 
@@ -288,6 +291,122 @@ void test_row_sum_verifier() {
     check(aether::find_first_bad_row_sum(row, row_sum) == 0u, "missing last element rejected");
 }
 
+// ---------- multithreading ----------
+
+std::size_t hardware_threads() {
+    const unsigned reported = std::thread::hardware_concurrency();
+    return reported > 0 ? reported : 1;
+}
+
+void test_partition_range() {
+    // Uneven split: 10 = 4 + 3 + 3, contiguous and in order.
+    check(aether::partition_range(10, 3) ==
+              std::vector<aether::IndexRange>{{0, 4}, {4, 7}, {7, 10}},
+          "remainder goes to the first ranges");
+    check(aether::partition_range(8, 4) ==
+              std::vector<aether::IndexRange>{{0, 2}, {2, 4}, {4, 6}, {6, 8}},
+          "even split");
+    check(aether::partition_range(2, 4) ==
+              std::vector<aether::IndexRange>{{0, 1}, {1, 2}, {2, 2}, {2, 2}},
+          "more parts than elements gives empty tail ranges");
+    check(aether::partition_range(0, 1) == std::vector<aether::IndexRange>{{0, 0}},
+          "empty input");
+
+    // Property check over many shapes: full coverage, no gaps, balanced.
+    bool valid = true;
+    for (std::size_t count : {1u, 7u, 64u, 1000u, 1001u}) {
+        for (std::size_t parts = 1; parts <= 12; ++parts) {
+            const auto ranges = aether::partition_range(count, parts);
+            std::size_t expected_begin = 0, smallest = count, largest = 0;
+            for (const auto& range : ranges) {
+                valid = valid && range.begin == expected_begin && range.end >= range.begin;
+                expected_begin = range.end;
+                smallest = std::min(smallest, range.size());
+                largest = std::max(largest, range.size());
+            }
+            valid = valid && ranges.size() == parts && expected_begin == count &&
+                    largest - smallest <= 1;
+        }
+    }
+    check(valid, "covers [0, count) exactly with sizes differing by <= 1");
+    check_throws<std::invalid_argument>([] { (void)aether::partition_range(10, 0); },
+                                        "zero parts throws");
+}
+
+void test_plan_thread_count() {
+    const std::size_t hardware = hardware_threads();
+    check(aether::plan_thread_count(1, 1'000'000, 1) == 1, "one thread when asked for one");
+    check(aether::plan_thread_count(hardware * 4, 1'000'000, 1) == hardware,
+          "capped at hardware concurrency (no oversubscription)");
+    check(aether::plan_thread_count(8, 3, 1) == std::min<std::size_t>(3, hardware),
+          "never more threads than elements");
+    check(aether::plan_thread_count(8, 1000, 400) == std::min<std::size_t>(3, hardware),
+          "one thread per min_elements_per_thread, rounded up");
+    check(aether::plan_thread_count(8, 0, 1) == 1, "empty input still reports one thread");
+    check_throws<std::invalid_argument>([] { (void)aether::plan_thread_count(0, 10, 1); },
+                                        "zero requested threads throws");
+    check_throws<std::invalid_argument>([] { (void)aether::plan_thread_count(2, 10, 0); },
+                                        "zero min_elements_per_thread throws");
+}
+
+void test_parallel_matches_sequential() {
+    // Uneven sizes (primes, sizes smaller than the thread count) and thread
+    // counts beyond the hardware limit, which must be clamped.
+    bool all_match = true;
+    bool counts_valid = true;
+    for (std::size_t n : {1u, 3u, 17u, 1000u, 10'007u}) {
+        const auto a = aether::make_deterministic_floats(n, 21);
+        const auto b = aether::make_deterministic_floats(n, 22);
+        std::vector<float> expected(n);
+        aether::vector_add(a, b, expected);
+        for (std::size_t threads = 1; threads <= hardware_threads() + 3; ++threads) {
+            std::vector<float> out(n, -1.0f);
+            const std::size_t used = aether::vector_add_parallel(a, b, out, threads, 1);
+            all_match = all_match && out == expected;
+            counts_valid = counts_valid && used >= 1 && used <= std::min(threads, n) &&
+                           used <= hardware_threads();
+        }
+    }
+    check(all_match, "bit-identical to sequential for every size and thread count");
+    check(counts_valid, "threads used never exceed request, elements or hardware");
+}
+
+void test_parallel_edge_cases() {
+    const std::vector<float> empty_in;
+    std::vector<float> empty_out;
+    check(aether::vector_add_parallel(empty_in, empty_in, empty_out, 4, 1) == 1,
+          "empty arrays: no worker threads started");
+
+    const std::vector<float> three(3, 1.0f), two(2, 1.0f);
+    std::vector<float> out(3, 7.0f);
+    check_throws<std::invalid_argument>(
+        [&] { (void)aether::vector_add_parallel(three, two, out, 2, 1); },
+        "a/b size mismatch throws");
+    check_throws<std::invalid_argument>(
+        [&] { (void)aether::vector_add_parallel(two, two, out, 2, 1); },
+        "output size mismatch throws");
+    check_throws<std::invalid_argument>(
+        [&] { (void)aether::vector_add_parallel(three, three, out, 0, 1); },
+        "zero threads throws");
+    check(out == std::vector<float>(3, 7.0f), "output untouched when validation fails");
+
+    // Output shifted by half the array: each chunk's output overlaps another
+    // thread's input chunk, a race only whole-array validation can catch.
+    std::vector<float> buffer(12, 1.0f);
+    const std::span<const float> first_half(buffer.data(), 8);
+    const std::span<float> shifted(buffer.data() + 4, 8);
+    const std::vector<float> ones(8, 1.0f);
+    check_throws<std::invalid_argument>(
+        [&] { (void)aether::vector_add_parallel(first_half, ones, shifted, 2, 1); },
+        "cross-chunk overlap rejected before threads start");
+
+    std::vector<float> in_place{1.0f, 2.0f, 3.0f, 4.0f, 5.0f};
+    const std::vector<float> addend(5, 10.0f);
+    (void)aether::vector_add_parallel(in_place, addend, in_place, 3, 1);
+    check(in_place == std::vector<float>{11.0f, 12.0f, 13.0f, 14.0f, 15.0f},
+          "exact in-place aliasing works across threads");
+}
+
 }  // namespace
 
 int main() {
@@ -313,6 +432,10 @@ int main() {
         {"traversal: row/column bit-identical", test_traversals_bit_identical},
         {"traversal: input validation", test_row_sums_validation},
         {"traversal: error-bound verifier", test_row_sum_verifier},
+        {"parallel: partition_range", test_partition_range},
+        {"parallel: plan_thread_count", test_plan_thread_count},
+        {"parallel: matches sequential", test_parallel_matches_sequential},
+        {"parallel: edge cases and validation", test_parallel_edge_cases},
     };
 
     int failed_tests = 0;
