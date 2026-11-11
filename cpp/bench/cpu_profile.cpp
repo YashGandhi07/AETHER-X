@@ -7,7 +7,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
-#include <thread>
+#include <utility>
 #include <vector>
 
 #include "aether/benchmark.hpp"
@@ -15,12 +15,9 @@
 #include "aether/matrix.hpp"
 #include "aether/parallel.hpp"
 #include "aether/profiling.hpp"
+#include "aether/system_info.hpp"
 #include "aether/traversal.hpp"
 #include "aether/vector_add.hpp"
-
-#ifndef AETHER_BUILD_TYPE
-#define AETHER_BUILD_TYPE "unknown"
-#endif
 
 namespace {
 
@@ -31,8 +28,6 @@ constexpr aether::BenchmarkConfig kConfig{
 
 class Profiler {
 public:
-    Profiler() : compiler_(aether::compiler_description()) {}
-
     // Benchmarks `workload`, then requires `verified()` to hold on the final
     // output, so a broken kernel can never produce a plausible-looking report.
     template <typename Workload, typename Verify>
@@ -46,14 +41,12 @@ public:
             {.workload = std::move(workload_name),
              .input_size = input_size,
              .thread_count = thread_count,
-             .compiler = compiler_,
-             .build_type = AETHER_BUILD_TYPE,
              .timestamp_utc = aether::utc_timestamp_now()},
             kConfig, result));
         print(records_.back());
     }
 
-    const std::vector<aether::ProfileRecord>& records() const noexcept { return records_; }
+    std::vector<aether::ProfileRecord> take_records() noexcept { return std::move(records_); }
 
 private:
     static void print(const aether::ProfileRecord& r) {
@@ -65,7 +58,6 @@ private:
                                  s.stddev ? 100.0 * *s.stddev / s.mean : 0.0);
     }
 
-    std::string compiler_;
     std::vector<aether::ProfileRecord> records_;
 };
 
@@ -126,11 +118,19 @@ int main(int argc, char** argv) {
         return 2;
     }
     try {
-        const unsigned reported = std::thread::hardware_concurrency();
-        const std::size_t hardware = reported > 0 ? reported : 1;
-        std::cout << std::format("AETHER X CPU profile ({}, {}, {} samples per workload)\n",
-                                 aether::compiler_description(), AETHER_BUILD_TYPE,
-                                 kConfig.measured_runs);
+        const aether::SystemInfo system = aether::detect_system_info();
+        const aether::BuildInfo build = aether::build_info();
+        if (system.process_translated.value_or(false)) {
+            std::cerr << "warning: running under Rosetta 2 translation; timings will not "
+                         "reflect native performance\n";
+        }
+        // Thread counts come from the detected logical CPUs (null -> 1 thread).
+        const std::size_t hardware = system.logical_cpus.value_or(1);
+        std::cout << std::format(
+            "AETHER X CPU profile: {} ({} logical CPUs), {} {} {}, {} {} {}, {} samples per workload\n",
+            system.cpu_model.value_or("unknown CPU"), hardware, system.os_family,
+            system.os_version.value_or("?"), system.architecture, build.compiler_id,
+            build.compiler_version, build.build_type, kConfig.measured_runs);
         std::cout << std::format("{:<22} {:>10} {:>3} {:>11} {:>11} {:>11} {:>11} {:>11} {:>8}\n",
                                  "workload", "elements", "thr", "min_ms", "median_ms", "mean_ms",
                                  "p95_ms", "max_ms", "cv");
@@ -145,9 +145,10 @@ int main(int argc, char** argv) {
         profile_traversals(profiler, 4096);
 
         const std::string output_path = argv[1];
-        aether::write_json_file(output_path, profiler.records(), aether::utc_timestamp_now());
-        std::cout << std::format("\nwrote {} records to {}\n", profiler.records().size(),
-                                 output_path);
+        const aether::ProfileReport report = aether::make_profile_report(profiler.take_records());
+        aether::write_json_file(output_path, report);
+        std::cout << std::format("\nwrote run {} ({} records) to {}\n", report.run_id,
+                                 report.records.size(), output_path);
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "error: " << error.what() << '\n';

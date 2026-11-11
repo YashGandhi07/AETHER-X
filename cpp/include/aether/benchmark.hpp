@@ -28,6 +28,8 @@ struct BenchmarkResult {
     double min_ms = 0.0;
     double max_ms = 0.0;
     std::size_t iterations_per_sample = 1;
+    // Actual warm-up batches run; can exceed warmup_runs because of min_warmup_ms.
+    std::size_t warmup_runs_executed = 0;
 };
 
 // Median of `values`; the mean of the two middle elements for even sizes.
@@ -91,11 +93,12 @@ BenchmarkResult run_benchmark(Workload&& workload, const BenchmarkConfig& config
         }
     }
 
+    std::size_t warmup_runs_executed = 0;
     const auto warmup_start = Clock::now();
-    for (std::size_t run = 0; run < config.warmup_runs ||
-                              elapsed_ms(warmup_start, Clock::now()) < config.min_warmup_ms;
-         ++run) {
+    while (warmup_runs_executed < config.warmup_runs ||
+           elapsed_ms(warmup_start, Clock::now()) < config.min_warmup_ms) {
         time_batch_ms(iterations);
+        ++warmup_runs_executed;
     }
 
     std::vector<double> samples_ms;
@@ -106,6 +109,7 @@ BenchmarkResult run_benchmark(Workload&& workload, const BenchmarkConfig& config
 
     BenchmarkResult result = summarize(std::move(samples_ms));
     result.iterations_per_sample = iterations;
+    result.warmup_runs_executed = warmup_runs_executed;
     return result;
 }
 

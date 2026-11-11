@@ -35,8 +35,25 @@ add_library(aether_core STATIC
     src/traversal.cpp
     src/parallel.cpp
     src/profiling.cpp
+    src/experiment_id.cpp
+    src/system_info.cpp
 )
+# Hardware detection: one platform implementation per OS (see src/platform/platform.hpp).
+if(APPLE)
+    target_sources(aether_core PRIVATE src/platform/system_info_macos.cpp)
+else()
+    target_sources(aether_core PRIVATE src/platform/system_info_fallback.cpp)
+endif()
 target_include_directories(aether_core PUBLIC include)
+
+# Build facts recorded in benchmark reports. Flags are only known at configure
+# time for single-config generators (Makefiles, Ninja).
+target_compile_definitions(aether_core PRIVATE AETHER_BUILD_TYPE="$<CONFIG>")
+if(CMAKE_BUILD_TYPE)
+    string(TOUPPER "${CMAKE_BUILD_TYPE}" aether_build_type_upper)
+    string(STRIP "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${aether_build_type_upper}}" aether_cxx_flags)
+    target_compile_definitions(aether_core PRIVATE AETHER_CXX_FLAGS="${aether_cxx_flags}")
+endif()
 # std::thread needs the platform thread library (-pthread on Linux; a no-op on macOS).
 find_package(Threads REQUIRED)
 target_link_libraries(aether_core PUBLIC Threads::Threads)
@@ -62,7 +79,6 @@ aether_enable_warnings(aether_parallel_vector_add_bench)
 
 add_executable(aether_cpu_profile bench/cpu_profile.cpp)
 target_link_libraries(aether_cpu_profile PRIVATE aether_core)
-target_compile_definitions(aether_cpu_profile PRIVATE AETHER_BUILD_TYPE="$<CONFIG>")
 aether_enable_warnings(aether_cpu_profile)
 
 enable_testing()
@@ -73,5 +89,11 @@ add_test(NAME aether_core_tests COMMAND aether_core_tests)
 
 add_executable(aether_profiling_tests tests/profiling_tests.cpp)
 target_link_libraries(aether_profiling_tests PRIVATE aether_core)
+target_include_directories(aether_profiling_tests PRIVATE src)  # tests the internal JsonWriter
 aether_enable_warnings(aether_profiling_tests)
 add_test(NAME aether_profiling_tests COMMAND aether_profiling_tests)
+
+add_executable(aether_system_info_tests tests/system_info_tests.cpp)
+target_link_libraries(aether_system_info_tests PRIVATE aether_core)
+aether_enable_warnings(aether_system_info_tests)
+add_test(NAME aether_system_info_tests COMMAND aether_system_info_tests)

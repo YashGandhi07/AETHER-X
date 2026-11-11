@@ -1,13 +1,16 @@
 #include "aether/profiling.hpp"
 
 #include <algorithm>
-#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <format>
 #include <fstream>
 #include <stdexcept>
 #include <system_error>
+#include <utility>
+
+#include "aether/experiment_id.hpp"
+#include "json_writer.hpp"
 
 namespace aether {
 namespace {
@@ -31,49 +34,76 @@ double sorted_percentile(std::span<const double> sorted, double p) {
     return sorted[lower] + (h - static_cast<double>(lower)) * (sorted[upper] - sorted[lower]);
 }
 
-// ---------- JSON output ----------
-
-void append_json_string(std::string& out, std::string_view text) {
-    out += '"';
-    for (const char ch : text) {
-        switch (ch) {
-            case '"': out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
-            default:
-                // Remaining control characters must be \u-escaped (RFC 8259).
-                if (static_cast<unsigned char>(ch) < 0x20) {
-                    out += std::format("\\u{:04x}", static_cast<unsigned>(ch));
-                } else {
-                    out += ch;
-                }
-        }
+void write_system(detail::JsonWriter& json, const SystemInfo& system) {
+    json.begin_object();
+    json.field("os_family", system.os_family);
+    json.field("os_version", system.os_version);
+    json.field("os_build", system.os_build);
+    json.field("kernel_release", system.kernel_release);
+    json.field("architecture", system.architecture);
+    json.field("process_translated", system.process_translated);
+    json.field("cpu_model", system.cpu_model);
+    json.field("logical_cpus", system.logical_cpus);
+    json.field("physical_cpus", system.physical_cpus);
+    json.key("core_types");
+    json.begin_array();
+    for (const CpuCoreType& core : system.core_types) {
+        json.begin_object();
+        json.field("name", core.name);
+        json.field("physical_cpus", core.physical_cpus);
+        json.end_object();
     }
-    out += '"';
+    json.end_array();
+    json.field("cache_line_bytes", system.cache_line_bytes);
+    json.field("memory_bytes", system.memory_bytes);
+    json.end_object();
 }
 
-void append_json_number(std::string& out, double value) {
-    if (!std::isfinite(value)) {
-        out += "null";  // JSON has no NaN/Infinity
-        return;
-    }
-    char buffer[32];
-    const auto [end, error] = std::to_chars(buffer, buffer + sizeof buffer, value);
-    if (error != std::errc{}) {
-        throw std::runtime_error("to_json: failed to format number");
-    }
-    out.append(buffer, end);
+void write_build(detail::JsonWriter& json, const BuildInfo& build) {
+    json.begin_object();
+    json.field("compiler_id", build.compiler_id);
+    json.field("compiler_version", build.compiler_version);
+    json.field("cxx_standard", build.cxx_standard);
+    json.field("build_type", build.build_type);
+    json.field("cmake_cxx_flags", build.cmake_cxx_flags);
+    json.field("assertions_enabled", build.assertions_enabled);
+    json.end_object();
 }
 
-void append_json_number(std::string& out, std::size_t value) { out += std::to_string(value); }
+void write_record(detail::JsonWriter& json, const ProfileRecord& r) {
+    const SampleStatistics& s = r.statistics;
+    json.begin_object();
+    json.field("experiment_id", r.experiment_id);
+    json.field("workload", r.metadata.workload);
+    json.field("input_size", r.metadata.input_size);
+    json.field("thread_count", r.metadata.thread_count);
+    json.field("timestamp_utc", r.metadata.timestamp_utc);
 
-// Writes `"key": ` with the given indentation.
-void append_key(std::string& out, int indent, std::string_view key) {
-    out.append(static_cast<std::size_t>(indent), ' ');
-    append_json_string(out, key);
-    out += ": ";
+    json.key("config");
+    json.begin_object();
+    json.field("warmup_runs", r.config.warmup_runs);
+    json.field("measured_runs", r.config.measured_runs);
+    json.field("min_warmup_ms", r.config.min_warmup_ms);
+    json.field("min_sample_ms", r.config.min_sample_ms);
+    json.end_object();
+
+    json.field("warmup_runs_executed", r.warmup_runs_executed);
+    json.field("iterations_per_sample", r.iterations_per_sample);
+
+    json.key("statistics");
+    json.begin_object();
+    json.field("count", s.count);
+    json.field("min", s.min);
+    json.field("max", s.max);
+    json.field("mean", s.mean);
+    json.field("median", s.median);
+    json.field("stddev", s.stddev);
+    json.field("p95", s.p95);
+    json.end_object();
+
+    json.key("samples");
+    json.number_array(r.samples_ms);
+    json.end_object();
 }
 
 }  // namespace
@@ -126,6 +156,9 @@ ProfileRecord make_profile_record(BenchmarkMetadata metadata, const BenchmarkCon
     if (metadata.thread_count == 0) {
         throw std::invalid_argument("make_profile_record: thread_count must be at least 1");
     }
+    if (!is_utc_timestamp(metadata.timestamp_utc)) {
+        throw std::invalid_argument("make_profile_record: timestamp must be YYYY-MM-DDTHH:MM:SSZ");
+    }
     for (const double sample : result.samples_ms) {
         if (!(sample >= 0.0)) {  // also rejects NaN
             throw std::invalid_argument("make_profile_record: samples must be non-negative");
@@ -133,26 +166,21 @@ ProfileRecord make_profile_record(BenchmarkMetadata metadata, const BenchmarkCon
     }
     ProfileRecord record;
     record.statistics = compute_statistics(result.samples_ms);  // validates non-empty/finite
+    record.experiment_id = make_experiment_id();
     record.metadata = std::move(metadata);
     record.config = config;
+    record.warmup_runs_executed = result.warmup_runs_executed;
     record.iterations_per_sample = result.iterations_per_sample;
     record.samples_ms = result.samples_ms;
     return record;
 }
 
-std::string compiler_description() {
-#if defined(__clang__) && defined(__apple_build_version__)
-    return std::format("Apple clang {}.{}.{}", __clang_major__, __clang_minor__,
-                       __clang_patchlevel__);
-#elif defined(__clang__)
-    return std::format("clang {}.{}.{}", __clang_major__, __clang_minor__, __clang_patchlevel__);
-#elif defined(__GNUC__)
-    return std::format("gcc {}.{}.{}", __GNUC__, __GNUC_MINOR__, __GNUC_PATCHLEVEL__);
-#elif defined(_MSC_VER)
-    return std::format("MSVC {}", _MSC_FULL_VER);
-#else
-    return "unknown";
-#endif
+ProfileReport make_profile_report(std::vector<ProfileRecord> records) {
+    return {.run_id = make_experiment_id(),
+            .generated_at_utc = utc_timestamp_now(),
+            .system = detect_system_info(),
+            .build = build_info(),
+            .records = std::move(records)};
 }
 
 std::string utc_timestamp_now() {
@@ -160,94 +188,50 @@ std::string utc_timestamp_now() {
     return std::format("{:%FT%TZ}", now);
 }
 
-std::string to_json(std::span<const ProfileRecord> records, const std::string& generated_at_utc) {
-    std::string out = "{\n";
-    append_key(out, 2, "schema");
-    append_json_string(out, kProfileSchema);
-    out += ",\n";
-    append_key(out, 2, "generated_at_utc");
-    append_json_string(out, generated_at_utc);
-    out += ",\n";
-    append_key(out, 2, "time_unit");
-    append_json_string(out, "ms");
-    out += ",\n";
-    append_key(out, 2, "results");
-    out += "[";
-
-    for (std::size_t i = 0; i < records.size(); ++i) {
-        const ProfileRecord& r = records[i];
-        const SampleStatistics& s = r.statistics;
-        out += i == 0 ? "\n    {\n" : ",\n    {\n";
-
-        const auto field_string = [&](std::string_view key, std::string_view value) {
-            append_key(out, 6, key);
-            append_json_string(out, value);
-            out += ",\n";
-        };
-        const auto field_count = [&](int indent, std::string_view key, std::size_t value) {
-            append_key(out, indent, key);
-            append_json_number(out, value);
-            out += ",\n";
-        };
-        const auto field_double = [&](int indent, std::string_view key, double value) {
-            append_key(out, indent, key);
-            append_json_number(out, value);
-            out += ",\n";
-        };
-
-        field_string("workload", r.metadata.workload);
-        field_count(6, "input_size", r.metadata.input_size);
-        field_count(6, "thread_count", r.metadata.thread_count);
-        field_string("compiler", r.metadata.compiler);
-        field_string("build_type", r.metadata.build_type);
-        field_string("timestamp_utc", r.metadata.timestamp_utc);
-
-        append_key(out, 6, "config");
-        out += "{\n";
-        field_count(8, "warmup_runs", r.config.warmup_runs);
-        field_count(8, "measured_runs", r.config.measured_runs);
-        field_double(8, "min_warmup_ms", r.config.min_warmup_ms);
-        append_key(out, 8, "min_sample_ms");
-        append_json_number(out, r.config.min_sample_ms);
-        out += "\n      },\n";
-
-        field_count(6, "iterations_per_sample", r.iterations_per_sample);
-
-        append_key(out, 6, "statistics");
-        out += "{\n";
-        field_count(8, "count", s.count);
-        field_double(8, "min", s.min);
-        field_double(8, "max", s.max);
-        field_double(8, "mean", s.mean);
-        field_double(8, "median", s.median);
-        append_key(out, 8, "stddev");
-        if (s.stddev) {
-            append_json_number(out, *s.stddev);
-        } else {
-            out += "null";
-        }
-        out += ",\n";
-        append_key(out, 8, "p95");
-        append_json_number(out, s.p95);
-        out += "\n      },\n";
-
-        append_key(out, 6, "samples");
-        out += "[";
-        for (std::size_t j = 0; j < r.samples_ms.size(); ++j) {
-            if (j > 0) {
-                out += ", ";
-            }
-            append_json_number(out, r.samples_ms[j]);
-        }
-        out += "]\n    }";
+bool is_utc_timestamp(const std::string& text) noexcept {
+    // Layout check: YYYY-MM-DDTHH:MM:SSZ (20 chars). Calendar validity is the
+    // producer's job; this guards against free-form strings in the report.
+    constexpr std::string_view kPattern = "dddd-dd-ddTdd:dd:ddZ";
+    if (text.size() != kPattern.size()) {
+        return false;
     }
-    out += records.empty() ? "]\n}\n" : "\n  ]\n}\n";
-    return out;
+    for (std::size_t i = 0; i < kPattern.size(); ++i) {
+        const bool digit = text[i] >= '0' && text[i] <= '9';
+        if (kPattern[i] == 'd' ? !digit : text[i] != kPattern[i]) {
+            return false;
+        }
+    }
+    return true;
 }
 
-void write_json_file(const std::filesystem::path& path, std::span<const ProfileRecord> records,
-                     const std::string& generated_at_utc) {
-    const std::string json = to_json(records, generated_at_utc);
+std::string to_json(const ProfileReport& report) {
+    detail::JsonWriter json;
+    json.begin_object();
+    json.field("schema", kProfileSchema);
+    json.field("run_id", report.run_id);
+    json.field("generated_at_utc", report.generated_at_utc);
+    json.field("time_unit", "ms");
+
+    json.key("environment");
+    json.begin_object();
+    json.key("system");
+    write_system(json, report.system);
+    json.key("build");
+    write_build(json, report.build);
+    json.end_object();
+
+    json.key("results");
+    json.begin_array();
+    for (const ProfileRecord& record : report.records) {
+        write_record(json, record);
+    }
+    json.end_array();
+    json.end_object();
+    return json.take();
+}
+
+void write_json_file(const std::filesystem::path& path, const ProfileReport& report) {
+    const std::string json = to_json(report);
     std::filesystem::path temporary = path;
     temporary += ".tmp";
     {
@@ -264,8 +248,10 @@ void write_json_file(const std::filesystem::path& path, std::span<const ProfileR
     std::error_code error;
     std::filesystem::rename(temporary, path, error);
     if (error) {
-        std::filesystem::remove(temporary, error);
-        throw std::runtime_error("write_json_file: cannot replace " + path.string());
+        std::error_code ignored;
+        std::filesystem::remove(temporary, ignored);
+        throw std::runtime_error("write_json_file: cannot replace " + path.string() + ": " +
+                                 error.message());
     }
 }
 
