@@ -1,0 +1,120 @@
+# =========================================================
+# AETHER X — .gitignore
+# Python · C++ · CUDA · React/Next.js · Docker · macOS
+# =========================================================
+
+# ---------- Secrets & environment ----------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+secrets.json
+service-account*.json
+.aws/
+.netrc
+
+# ---------- macOS ----------
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# ---------- Editors ----------
+.idea/
+*.swp
+*.swo
+*~
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+env/
+.python-version
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.ipynb_checkpoints/
+
+# ---------- C++ / CMake ----------
+build/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+*.o
+*.obj
+*.a
+*.lib
+*.dylib
+*.dll
+*.exe
+*.out
+
+# ---------- CUDA ----------
+*.ptx
+*.cubin
+*.fatbin
+*.nsys-rep
+*.ncu-rep
+*.qdrep
+
+# ---------- Node / React / Next.js ----------
+node_modules/
+.next/
+out/
+dist/
+.turbo/
+.vercel/
+*.tsbuildinfo
+next-env.d.ts
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---------- Docker ----------
+docker-compose.override.yml
+.docker/
+
+# ---------- ML: models, data, experiment output ----------
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.engine
+*.h5
+*.pkl
+*.joblib
+checkpoints/
+artifacts/
+mlruns/
+wandb/
+runs/
+ml/data/
+ml/models/
+
+# ---------- Benchmarks & logs ----------
+benchmarks/results/
+*.log
+logs/
+tmp/
