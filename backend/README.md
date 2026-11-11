@@ -1,67 +1,102 @@
-# AETHER X backend: Python ↔ C++ benchmark integration
+# AETHER X backend
 
-`aether_bench` runs the compiled C++ profiler (`cpp/build/aether_cpu_profile`)
-as a subprocess, then parses and validates its `aether.cpu_profile.v2` JSON report
-into typed Python objects. It uses only the Python standard library (tested
-with Python 3.14).
+Two Python packages on top of the C++ engine in `cpp/`:
 
-## Quick start (from the repository root)
+| Package | Purpose | Dependencies |
+|---|---|---|
+| `aether_bench` | Runs the compiled C++ tools as subprocesses and validates their JSON | standard library only |
+| `aether_api` | FastAPI HTTP service (`/api/v1/...`) built on `aether_bench` | `requirements.txt` |
+
+## Setup (from the repository root)
 
 ```bash
 # 1. Build the C++ engine (Release by default)
 cmake -S cpp -B cpp/build
 cmake --build cpp/build
 
-# 2. Run the profiler through Python and print a summary of the real results
-PYTHONPATH=backend python3 -m aether_bench
-PYTHONPATH=backend python3 -m aether_bench --json         # full validated report
-PYTHONPATH=backend python3 -m aether_bench --timeout 60   # seconds (default 120)
-
-# 3. Run the Python tests (unit tests + one integration test with the real binary)
-python3 -m unittest discover -s backend -t backend -v
+# 2. Create the virtual environment from the pinned dependency files
+python3 -m venv backend/.venv
+backend/.venv/bin/python -m pip install -r backend/requirements-dev.txt   # or requirements.txt for runtime only
 ```
 
-The integration test is skipped when the C++ profiler has not been built. Set
-`AETHER_REQUIRE_INTEGRATION=1` to make that a failure instead (e.g. in CI).
+`requirements.txt` pins every runtime package (direct and transitive) and
+`requirements-dev.txt` adds the test tools, so installs are reproducible.
 
-Command-line exit codes: `0` success, `1` benchmark failed or produced an
-invalid report, `2` profiler not built or invalid arguments, `3` timeout.
+## Run the API
 
-## Library use
+```bash
+backend/.venv/bin/uvicorn aether_api.main:app --app-dir backend --host 127.0.0.1 --port 8000
 
-```python
-from aether_bench import BenchmarkError, run_cpu_profile
-
-try:
-    run = run_cpu_profile(timeout_s=60)
-except BenchmarkError as error:
-    ...  # see the exception types below
-else:
-    for record in run.report.records:
-        print(record.workload, record.thread_count, record.statistics.median)
+curl http://127.0.0.1:8000/api/v1/health
+curl http://127.0.0.1:8000/api/v1/system
 ```
 
-| Exception | Meaning |
+Interactive API docs: http://127.0.0.1:8000/docs (OpenAPI schema at `/openapi.json`).
+
+| Endpoint | Returns |
 |---|---|
-| `ExecutableNotFoundError` | `cpp/build/aether_cpu_profile` is missing or not executable |
-| `BenchmarkTimeoutError` | ran longer than `timeout_s`; the process was killed |
-| `BenchmarkProcessError` | non-zero exit or killed by a signal (`.returncode`, `.stdout`, `.stderr`) |
-| `BenchmarkOutputError` | exited 0, but the report is missing, too large, malformed or invalid |
+| `GET /api/v1/health` | `status` (`ok`, or `degraded` if the C++ engine is not built), `service`, `version`, `engine_available`. Never runs the engine. |
+| `GET /api/v1/system` | Host hardware and engine build metadata from the C++ collector (`aether_system_info`, no benchmarks). Collected once per process and cached. `null` means the platform could not report a value. |
 
-All four derive from `BenchmarkError`. A returned `ProfileRun` is always a
-validated success.
+Errors always use one shape, with the request id also sent in the `X-Request-ID` header:
 
-## Design notes
+```json
+{"error": {"code": "engine_not_built", "message": "The C++ engine is not built on this server.", "request_id": "..."}}
+```
 
-* **No caller-chosen executables.** Only names in `KNOWN_EXECUTABLES` run,
-  resolved inside the build directory (default `cpp/build`).
-* **No shell.** Commands are argument lists with `shell=False`. The only
-  argument is a report path inside a private temporary directory.
+| Code | HTTP | Cause |
+|---|---|---|
+| `engine_not_built` | 503 | `cpp/build/aether_system_info` is missing |
+| `engine_timeout` | 504 | the engine exceeded `AETHER_ENGINE_TIMEOUT_S` |
+| `engine_failed` / `engine_bad_output` | 502 | non-zero exit / invalid JSON from the engine |
+| `not_found` / `method_not_allowed` / `validation_error` | 404 / 405 / 422 | client errors |
+| `internal_error` | 500 | anything unexpected (details are logged server-side only) |
+
+### Configuration (environment variables)
+
+| Variable | Default | Notes |
+|---|---|---|
+| `AETHER_CORS_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | explicit `scheme://host[:port]` list; `*` is rejected |
+| `AETHER_ENGINE_TIMEOUT_S` | `10` | must be in (0, 300] |
+| `AETHER_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+
+Invalid values stop the service at startup. CORS allows only `GET`, without
+credentials, because the API has no authentication yet.
+
+Logs are JSON lines on stderr (`aether.api.access` has one entry per request
+with `request_id`, `method`, `path` (no query string), `status` and
+`duration_ms`).
+
+## Run the tests
+
+```bash
+backend/.venv/bin/pytest backend
+```
+
+This runs the `aether_bench` tests (fake executables, synthetic fixtures
+labelled `TEST_FIXTURE`), the API tests (FastAPI `TestClient` with a synthetic
+metadata provider) and two integration tests against the real C++ binaries.
+The integration tests are skipped when the engine is not built; set
+`AETHER_REQUIRE_INTEGRATION=1` to make that a failure instead.
+
+## Command-line profiler (no API)
+
+```bash
+PYTHONPATH=backend python3 -m aether_bench            # summary table of a real profile run
+PYTHONPATH=backend python3 -m aether_bench --json     # full validated report
+```
+
+Exit codes: `0` success, `1` benchmark failed or invalid report, `2` not built
+or bad arguments, `3` timeout.
+
+## Design notes (`aether_bench`)
+
+* **No caller-chosen executables:** only names in `KNOWN_EXECUTABLES` run,
+  resolved inside `cpp/build`.
+* **No shell:** argument lists with `shell=False`; no request data is ever
+  passed to a process.
 * **Isolated child process:** minimal environment (`PATH`, `LC_ALL`), no stdin,
-  explicit timeout, output decoded as UTF-8 with replacement.
-* **Strict validation:** required fields, types (JSON `true` is not a count),
-  ranges, UUID and timestamp formats, unique ids, and every statistic is
-  recomputed from the raw samples and must match. Unknown extra fields are
-  ignored, so additive schema changes stay compatible.
-* **Test fixtures are synthetic and labelled** `TEST_FIXTURE`. Real
-  measurements only ever come from the C++ profiler.
+  explicit timeout.
+* **Strict validation:** types, ranges, identifier formats, unique ids, and
+  every statistic recomputed from the raw samples. Unknown extra fields are
+  ignored for forward compatibility.

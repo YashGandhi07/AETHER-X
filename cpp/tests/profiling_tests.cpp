@@ -310,6 +310,23 @@ void test_json_writer_structure() {
         "incomplete document throws");
 }
 
+void test_environment_json() {
+    aether::ProfileReport report = sample_report({});
+    const std::string json =
+        aether::environment_to_json(report.system, report.build, "2026-01-02T03:04:06Z");
+    check(contains(json, R"("schema": "aether.system_info.v1")"), "system info schema id");
+    check(contains(json, R"("generated_at_utc": "2026-01-02T03:04:06Z")"), "timestamp");
+    check(contains(json, R"("cpu_model": "Test CPU")") && contains(json, R"("compiler_id": "AppleClang")"),
+          "same system and build objects as profile reports");
+    check(!contains(json, "\"results\"") && !contains(json, "\"run_id\""),
+          "no benchmark results in a system info document");
+
+    report.system = {.os_family = "unknown", .architecture = "unknown"};
+    check(contains(aether::environment_to_json(report.system, report.build, "t"),
+                   R"("cpu_model": null)"),
+          "undetected fields stay null");
+}
+
 void test_write_json_file() {
     namespace fs = std::filesystem;
     const fs::path dir = fs::temp_directory_path() /
@@ -347,6 +364,7 @@ int main() {
         {"json: unavailable values are null", test_json_unavailable_values_are_null},
         {"json: value formatting and escaping", test_json_value_formatting},
         {"json: writer structure and misuse", test_json_writer_structure},
+        {"json: environment-only document", test_environment_json},
         {"json: atomic file write", test_write_json_file},
     };
     return aether::test::run_tests(kTests);

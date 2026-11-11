@@ -19,6 +19,7 @@ from typing import Any, Callable, Mapping, Optional, TypeVar
 from .errors import BenchmarkOutputError
 
 SCHEMA_ID = "aether.cpu_profile.v2"
+SYSTEM_INFO_SCHEMA_ID = "aether.system_info.v1"
 
 _UUID_V4 = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
 _UTC_TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
@@ -96,6 +97,16 @@ class BenchmarkRecord:
     iterations_per_sample: int
     statistics: Statistics
     samples_ms: tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class SystemReport:
+    """Host and build metadata from ``aether_system_info`` (no benchmarks)."""
+
+    schema: str
+    generated_at_utc: str
+    system: SystemInfo
+    build: BuildInfo
 
 
 @dataclass(frozen=True)
@@ -339,8 +350,8 @@ def _reject_constant(name: str) -> Any:
     raise ValueError(f"non-standard JSON constant {name}")
 
 
-def parse_report(text: str) -> ProfileReport:
-    """Parses and validates a report. Raises BenchmarkOutputError on any problem."""
+def _load_document(text: str, expected_schema: str) -> tuple[Mapping[str, Any], str]:
+    """Strict JSON parse plus schema-id check; returns (root object, schema)."""
     if not text.strip():
         raise BenchmarkOutputError("report is empty")
     try:
@@ -350,8 +361,25 @@ def parse_report(text: str) -> ProfileReport:
 
     root = _object(document, "$")
     schema = _string(_field(root, "schema", "$"), "$.schema")
-    if schema != SCHEMA_ID:
-        raise _fail("$.schema", f"unsupported schema {schema!r}, expected {SCHEMA_ID!r}")
+    if schema != expected_schema:
+        raise _fail("$.schema", f"unsupported schema {schema!r}, expected {expected_schema!r}")
+    return root, schema
+
+
+def parse_system_report(text: str) -> SystemReport:
+    """Parses ``aether.system_info.v1``. Raises BenchmarkOutputError on any problem."""
+    root, schema = _load_document(text, SYSTEM_INFO_SCHEMA_ID)
+    return SystemReport(
+        schema=schema,
+        generated_at_utc=_timestamp(_field(root, "generated_at_utc", "$"), "$.generated_at_utc"),
+        system=_parse_system(_object(_field(root, "system", "$"), "$.system"), "$.system"),
+        build=_parse_build(_object(_field(root, "build", "$"), "$.build"), "$.build"),
+    )
+
+
+def parse_report(text: str) -> ProfileReport:
+    """Parses and validates a report. Raises BenchmarkOutputError on any problem."""
+    root, schema = _load_document(text, SCHEMA_ID)
     time_unit = _string(_field(root, "time_unit", "$"), "$.time_unit")
     if time_unit != "ms":
         raise _fail("$.time_unit", f"expected 'ms', got {time_unit!r}")

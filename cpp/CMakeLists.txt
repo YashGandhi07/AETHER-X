@@ -81,6 +81,10 @@ add_executable(aether_cpu_profile bench/cpu_profile.cpp)
 target_link_libraries(aether_cpu_profile PRIVATE aether_core)
 aether_enable_warnings(aether_cpu_profile)
 
+add_executable(aether_system_info tools/system_info.cpp)
+target_link_libraries(aether_system_info PRIVATE aether_core)
+aether_enable_warnings(aether_system_info)
+
 enable_testing()
 add_executable(aether_core_tests tests/core_tests.cpp)
 target_link_libraries(aether_core_tests PRIVATE aether_core)

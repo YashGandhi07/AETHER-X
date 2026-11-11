@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import unittest
 
-from aether_bench import BenchmarkOutputError, parse_report
+from aether_bench import BenchmarkOutputError, parse_report, parse_system_report
 
 from .fixtures import synthetic_report, mutated
 
@@ -114,6 +114,34 @@ class MalformedReportTests(unittest.TestCase):
 
     def test_sample_count_mismatch(self) -> None:
         self.assert_rejected(mutated(synthetic_report(), "results.0.statistics.count", 5), "has 4 entries")
+
+
+class SystemReportTests(unittest.TestCase):
+    """aether.system_info.v1 reuses the profile report's system/build validation."""
+
+    @staticmethod
+    def document() -> dict:
+        environment = synthetic_report()["environment"]
+        return {"schema": "aether.system_info.v1", "generated_at_utc": "2000-01-01T00:00:00Z",
+                "system": environment["system"], "build": environment["build"]}
+
+    def test_parses_valid_document(self) -> None:
+        report = parse_system_report(json.dumps(self.document()))
+        self.assertEqual(report.system.cpu_model, "TEST_FIXTURE CPU (not a real measurement)")
+        self.assertIsNone(report.system.os_version)
+        self.assertEqual(report.build.cxx_standard, "C++20")
+
+    def test_rejects_wrong_schema_and_bad_fields(self) -> None:
+        document = self.document()
+        for text, fragment in [
+            (mutated(document, "schema", "aether.cpu_profile.v2"), "unsupported schema"),
+            (mutated(document, "system.logical_cpus", -1), "$.system.logical_cpus"),
+            (mutated(document, "build", delete=True), "$.build: missing"),
+            (mutated(document, "generated_at_utc", "now"), "UTC timestamp"),
+        ]:
+            with self.subTest(fragment=fragment), self.assertRaises(BenchmarkOutputError) as caught:
+                parse_system_report(text)
+            self.assertIn(fragment, str(caught.exception))
 
 
 if __name__ == "__main__":

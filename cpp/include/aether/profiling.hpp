@@ -87,6 +87,13 @@ inline constexpr const char* kProfileSchema = "aether.cpu_profile.v2";
 // environment fields are written as null; doubles round-trip exactly.
 std::string to_json(const ProfileReport& report);
 
+inline constexpr const char* kSystemInfoSchema = "aether.system_info.v1";
+
+// Serializes only the environment (same "system" and "build" objects as in a
+// profile report), for tools that need host metadata without running benchmarks.
+std::string environment_to_json(const SystemInfo& system, const BuildInfo& build,
+                                const std::string& generated_at_utc);
+
 // Writes to_json() output to `path` via a temporary file and rename, so a
 // crash never leaves a truncated report. Throws std::runtime_error on I/O failure.
 void write_json_file(const std::filesystem::path& path, const ProfileReport& report);

@@ -230,6 +230,20 @@ std::string to_json(const ProfileReport& report) {
     return json.take();
 }
 
+std::string environment_to_json(const SystemInfo& system, const BuildInfo& build,
+                                const std::string& generated_at_utc) {
+    detail::JsonWriter json;
+    json.begin_object();
+    json.field("schema", kSystemInfoSchema);
+    json.field("generated_at_utc", generated_at_utc);
+    json.key("system");
+    write_system(json, system);
+    json.key("build");
+    write_build(json, build);
+    json.end_object();
+    return json.take();
+}
+
 void write_json_file(const std::filesystem::path& path, const ProfileReport& report) {
     const std::string json = to_json(report);
     std::filesystem::path temporary = path;

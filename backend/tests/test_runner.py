@@ -19,6 +19,7 @@ from aether_bench import (
     ExecutableNotFoundError,
     resolve_executable,
     run_cpu_profile,
+    run_system_info,
 )
 
 from .fixtures import synthetic_report, write_fake_profiler
@@ -162,6 +163,38 @@ time.sleep(30)
         for timeout in (0, -1, float("inf"), float("nan")):
             with self.subTest(timeout=timeout), self.assertRaises(ValueError):
                 self.run_profile(timeout_s=timeout)
+
+
+class SystemInfoRunnerTests(RunnerTestCase):
+    """run_system_info shares the hardened executor; output comes from stdout."""
+
+    def install_system_info(self, body: str) -> None:
+        script = write_fake_profiler(self.build_dir, body)
+        script.rename(self.build_dir / "aether_system_info")
+
+    def test_reads_document_from_stdout_without_arguments(self) -> None:
+        environment = synthetic_report()["environment"]
+        document = {"schema": "aether.system_info.v1", "generated_at_utc": "2000-01-01T00:00:00Z",
+                    "system": environment["system"], "build": environment["build"]}
+        self.install_system_info(f"""
+assert len(sys.argv) == 1, "system_info takes no arguments"
+print({json.dumps(json.dumps(document))})
+""")
+        report = run_system_info(timeout_s=10.0, build_dir=self.build_dir)
+        self.assertEqual(report.system.os_family, "TEST_FIXTURE_os")
+
+    def test_failures_use_the_same_error_types(self) -> None:
+        with self.assertRaises(ExecutableNotFoundError):
+            run_system_info(build_dir=self.build_dir)
+        self.install_system_info("print('not json')\n")
+        with self.assertRaises(BenchmarkOutputError):
+            run_system_info(build_dir=self.build_dir)
+        self.install_system_info("sys.exit(3)\n")
+        with self.assertRaises(BenchmarkProcessError):
+            run_system_info(build_dir=self.build_dir)
+        self.install_system_info("time.sleep(30)\n")
+        with self.assertRaises(BenchmarkTimeoutError):
+            run_system_info(timeout_s=0.5, build_dir=self.build_dir)
 
 
 if __name__ == "__main__":
