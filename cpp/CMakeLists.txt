@@ -19,9 +19,39 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-add_executable(aether_engine src/main.cpp)
+# Same strict warning set for every target in the project.
+function(aether_enable_warnings target)
+    target_compile_options(${target} PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall -Wextra -Wpedantic -Wconversion -Wshadow>
+    )
+endfunction()
 
-target_compile_options(aether_engine PRIVATE
-    $<$<CXX_COMPILER_ID:MSVC>:/W4>
-    $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall -Wextra -Wpedantic>
+# Core library: kernels and benchmark utilities shared by tools and tests.
+add_library(aether_core STATIC
+    src/vector_add.cpp
+    src/benchmark.cpp
+    src/matrix.cpp
+    src/traversal.cpp
 )
+target_include_directories(aether_core PUBLIC include)
+aether_enable_warnings(aether_core)
+
+add_executable(aether_engine src/main.cpp)
+aether_enable_warnings(aether_engine)
+
+add_executable(aether_vector_add_bench bench/vector_add_bench.cpp)
+target_link_libraries(aether_vector_add_bench PRIVATE aether_core)
+target_compile_definitions(aether_vector_add_bench PRIVATE AETHER_BUILD_TYPE="$<CONFIG>")
+aether_enable_warnings(aether_vector_add_bench)
+
+add_executable(aether_matrix_traversal_bench bench/matrix_traversal_bench.cpp)
+target_link_libraries(aether_matrix_traversal_bench PRIVATE aether_core)
+target_compile_definitions(aether_matrix_traversal_bench PRIVATE AETHER_BUILD_TYPE="$<CONFIG>")
+aether_enable_warnings(aether_matrix_traversal_bench)
+
+enable_testing()
+add_executable(aether_core_tests tests/core_tests.cpp)
+target_link_libraries(aether_core_tests PRIVATE aether_core)
+aether_enable_warnings(aether_core_tests)
+add_test(NAME aether_core_tests COMMAND aether_core_tests)

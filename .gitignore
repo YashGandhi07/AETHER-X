@@ -33,6 +33,7 @@ service-account*.json
 .vscode/*
 !.vscode/settings.json
 !.vscode/extensions.json
+.cache/
 
 # ---------- Python ----------
 __pycache__/
