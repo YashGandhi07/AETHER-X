@@ -237,9 +237,9 @@ class _RecordingDatabase:
         self.disposed += 1
 
 
-def test_app_holds_database_and_disposes_it_on_shutdown(fetch: Any, fake_run: Any) -> None:
+def test_app_holds_database_and_disposes_it_on_shutdown(fetch: Any, fake_run: Any, store: Any) -> None:
     database = _RecordingDatabase()
-    app = create_app(Settings(), SystemInfoProvider(fetch), BenchmarkService(fake_run),
+    app = create_app(Settings(), SystemInfoProvider(fetch), BenchmarkService(fake_run, store),
                      database=database)  # type: ignore[arg-type]
     with TestClient(app) as client:
         assert app.state.database is database

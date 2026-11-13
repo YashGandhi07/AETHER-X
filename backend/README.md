@@ -89,6 +89,31 @@ Response (`200`): `status: "succeeded"`, `run_id`, `generated_at_utc`, `time_uni
 * Timings depend on the machine and its current load; repeat runs and compare
   medians rather than single values.
 
+### Saved experiments
+
+Every engine run through `POST /api/v1/benchmarks/run` is saved in PostgreSQL
+before the response is returned, so a `200` means the measurement is stored.
+
+* **One transaction per run:** the environment (reused if identical), the run,
+  the experiment and every timing sample are committed together. The deferred
+  sample-count trigger checks the experiment at `COMMIT`; any failure rolls
+  back everything and the client gets `503 database_unavailable` or
+  `500 database_error` instead of an unsaved result.
+* **Exact values:** samples and statistics are stored as reported by the
+  engine (`double precision`, bit-for-bit). `wall_time_s` is stored exactly and
+  rounded to microseconds in responses.
+* **Failures are never measurements:** engine failures are stored as
+  `failed` / `timed_out` runs with an error code and no experiment (a missing
+  engine records nothing, since nothing ran). The read endpoints return only
+  experiments of `succeeded` runs.
+
+| Endpoint (localhost only) | Returns |
+|---|---|
+| `GET /api/v1/benchmarks?limit=20&offset=0` | saved experiments, newest run first, without samples: `items`, `total`, `limit` (1–100), `offset` (0–100,000), `time_unit` |
+| `GET /api/v1/benchmarks/{experiment_id}` | one saved experiment in the same shape as the `POST` response, including every sample; `404 not_found` if unknown or not a UUID |
+
+The read endpoints stay available when `AETHER_ENABLE_BENCHMARKS=0`.
+
 Errors always use one shape, with the request id also sent in the `X-Request-ID` header:
 
 ```json
@@ -103,6 +128,8 @@ Errors always use one shape, with the request id also sent in the `X-Request-ID`
 | `benchmark_busy` | 429 | another benchmark is running (`Retry-After: 5`) |
 | `engine_failed` / `engine_bad_output` | 502 | non-zero exit / invalid JSON from the engine |
 | `not_found` / `method_not_allowed` / `validation_error` | 404 / 405 / 422 | client errors |
+| `database_unavailable` | 503 | PostgreSQL unreachable, pool exhausted or statement timeout |
+| `database_error` | 500 | the database rejected the data (e.g. a constraint); nothing was saved |
 | `internal_error` | 500 | anything unexpected (details are logged server-side only) |
 
 ### Configuration (environment variables)
@@ -174,7 +201,7 @@ The database enforces integrity itself: CHECK constraints (including NaN and
 Infinity rejection), foreign keys (`ON DELETE CASCADE` from runs to samples,
 `RESTRICT` on environments) and a deferred constraint trigger that requires
 every experiment to have exactly `measured_runs` samples numbered `0..n-1` at
-`COMMIT`. Nothing writes to these tables yet.
+`COMMIT`. `aether_api/persistence.py` (`BenchmarkStore`) is the only writer (see below).
 
 Apply and inspect migrations (from `backend/`; uses the `AETHER_DB_*` settings,
 so `alembic.ini` contains no URL or credentials):
@@ -213,6 +240,10 @@ labelled `TEST_FIXTURE`), the API tests (FastAPI `TestClient` with a synthetic
 metadata provider) and two integration tests against the real C++ binaries.
 The integration tests are skipped when the engine is not built; set
 `AETHER_REQUIRE_INTEGRATION=1` to make that a failure instead.
+
+`tests/api/test_benchmark_persistence.py` (fake engine, SYNTHETIC reports) and
+the real-engine HTTP test commit to the test database described below and
+delete its rows first; they never touch `aether_x_dev`.
 
 The database unit tests need no server. `tests/test_database_integration.py`
 runs read-only checks against the real local PostgreSQL and is skipped when it

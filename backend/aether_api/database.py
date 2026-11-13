@@ -158,7 +158,7 @@ class Database:
             # `from None`: the driver error is summarized (and redacted) here
             # rather than chained, so a traceback cannot carry more than this.
             raise DatabaseUnavailableError(
-                f"cannot reach PostgreSQL at {self.settings.describe()}: {self._safe_reason(exc)}"
+                f"cannot reach PostgreSQL at {self.settings.describe()}: {self.safe_reason(exc)}"
             ) from None
         if value != 1:
             raise DatabaseUnavailableError(f"unexpected SELECT 1 result: {value!r}")
@@ -167,7 +167,7 @@ class Database:
     def dispose(self) -> None:
         self.engine.dispose()
 
-    def _safe_reason(self, exc: SQLAlchemyError) -> str:
+    def safe_reason(self, exc: SQLAlchemyError) -> str:
         # The driver's own message (not SQLAlchemy's wrapper, which may append
         # SQL and a docs link), first line only, with the password removed in
         # case a server or driver ever echoes it.

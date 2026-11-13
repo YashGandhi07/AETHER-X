@@ -9,13 +9,17 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Iterator
+from datetime import datetime
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
 from aether_api.benchmarks import BenchmarkService
 from aether_api.config import Settings
+from aether_api.db_models import RunStatus
 from aether_api.main import create_app
+from aether_api.models import BenchmarkRunRequest
 from aether_api.system_info import SystemInfoProvider
 from aether_bench import (
     MATRIX_WORKLOADS,
@@ -96,6 +100,34 @@ class FakeBenchmarkRun:
                           wall_time_s=0.25)
 
 
+class RecordingStore:
+    """TEST DOUBLE for persistence.BenchmarkStore: keeps what the service
+    would save in memory (no database) and can be told to fail."""
+
+    def __init__(self) -> None:
+        self.succeeded: list[tuple[BenchmarkRunRequest, ProfileRun, datetime, datetime]] = []
+        self.failed: list[dict[str, Any]] = []
+        self.error: Exception | None = None
+
+    def save_succeeded(self, request: BenchmarkRunRequest, run: ProfileRun,
+                       started_at: datetime, finished_at: datetime) -> None:
+        if self.error is not None:
+            raise self.error
+        self.succeeded.append((request, run, started_at, finished_at))
+
+    def save_failed(self, request: BenchmarkRunRequest, status: RunStatus, error_code: str,
+                    error_message: str, started_at: datetime, finished_at: datetime) -> None:
+        if self.error is not None:
+            raise self.error
+        self.failed.append(dict(request=request, status=status, error_code=error_code,
+                                error_message=error_message))
+
+
+@pytest.fixture
+def store() -> RecordingStore:
+    return RecordingStore()
+
+
 @pytest.fixture
 def fetch() -> CountingFetch:
     return CountingFetch()
@@ -107,10 +139,10 @@ def fake_run() -> FakeBenchmarkRun:
 
 
 @pytest.fixture
-def local_client(settings: Settings, fetch: CountingFetch,
-                 fake_run: FakeBenchmarkRun) -> Iterator[TestClient]:
+def local_client(settings: Settings, fetch: CountingFetch, fake_run: FakeBenchmarkRun,
+                 store: RecordingStore) -> Iterator[TestClient]:
     """A client whose requests come from 127.0.0.1, like a local developer."""
-    app = create_app(settings, SystemInfoProvider(fetch), BenchmarkService(fake_run))
+    app = create_app(settings, SystemInfoProvider(fetch), BenchmarkService(fake_run, store))  # type: ignore[arg-type]
     with TestClient(app, raise_server_exceptions=False, client=("127.0.0.1", 50000)) as test_client:
         yield test_client
 
@@ -121,9 +153,9 @@ def settings() -> Settings:
 
 
 @pytest.fixture
-def client(settings: Settings, fetch: CountingFetch,
-           fake_run: FakeBenchmarkRun) -> Iterator[TestClient]:
+def client(settings: Settings, fetch: CountingFetch, fake_run: FakeBenchmarkRun,
+           store: RecordingStore) -> Iterator[TestClient]:
     """Default TestClient: its client host is 'testclient', i.e. NOT loopback."""
-    app = create_app(settings, SystemInfoProvider(fetch), BenchmarkService(fake_run))
+    app = create_app(settings, SystemInfoProvider(fetch), BenchmarkService(fake_run, store))  # type: ignore[arg-type]
     with TestClient(app, raise_server_exceptions=False) as test_client:
         yield test_client

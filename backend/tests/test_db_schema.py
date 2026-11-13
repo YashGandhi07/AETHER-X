@@ -15,24 +15,21 @@ fixtures (labelled TEST_FIXTURE), never real measurements.
 from __future__ import annotations
 
 import math
-import os
 import statistics
 import uuid
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
 
 import pytest
 from alembic import command
 from alembic.autogenerate import compare_metadata
-from alembic.config import Config
 from alembic.migration import MigrationContext
 from sqlalchemy import Connection, delete, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from aether_api.database import Database, DatabaseSettings, DatabaseUnavailableError
+from aether_api.database import Database
 from aether_api.db_models import (
     Base,
     BenchmarkRun,
@@ -42,47 +39,28 @@ from aether_api.db_models import (
     TimingSample,
 )
 
-BACKEND_DIR = Path(__file__).resolve().parents[1]
-TEST_DB_NAME = os.environ.get("AETHER_TEST_DB_NAME", "aether_x_test")
+from .db_support import (
+    REQUIRE_DATABASE,
+    alembic_config as _alembic,
+    db_test_settings,
+    rebuild_schema,
+    unavailable_reason,
+)
+
 EXPECTED_TABLES = {"alembic_version", "environments", "benchmark_runs", "experiments", "timing_samples"}
 T0 = datetime(2000, 1, 1, tzinfo=timezone.utc)  # obviously synthetic timestamps
 
 
-def _settings() -> DatabaseSettings:
-    if not TEST_DB_NAME.endswith("_test"):
-        raise RuntimeError(f"refusing to rebuild schema in {TEST_DB_NAME!r}: name must end in '_test'")
-    return DatabaseSettings.from_environment({**os.environ, "AETHER_DB_NAME": TEST_DB_NAME})
-
-
-def _unavailable_reason() -> str | None:
-    db = Database(_settings())
-    try:
-        db.check_connection()
-        return None
-    except DatabaseUnavailableError as exc:
-        return str(exc)
-    finally:
-        db.dispose()
-
-
-_REASON = _unavailable_reason()
+_REASON = unavailable_reason()
 pytestmark = pytest.mark.skipif(
-    _REASON is not None and os.environ.get("AETHER_REQUIRE_DATABASE") != "1",
+    _REASON is not None and not REQUIRE_DATABASE,
     reason=f"test database not reachable: {_REASON}")
-
-
-def _alembic(connection: Connection) -> Config:
-    config = Config(str(BACKEND_DIR / "alembic.ini"))
-    config.attributes["connection"] = connection
-    return config
 
 
 @pytest.fixture(scope="module")
 def database() -> Iterator[Database]:
-    db = Database(_settings())
-    with db.engine.begin() as connection:  # fresh schema at the latest revision
-        command.downgrade(_alembic(connection), "base")
-        command.upgrade(_alembic(connection), "head")
+    db = Database(db_test_settings())
+    rebuild_schema(db)  # fresh schema at the latest revision
     yield db
     db.dispose()
 

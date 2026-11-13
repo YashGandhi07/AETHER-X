@@ -159,6 +159,31 @@ class BenchmarkRunResponse(_Response):
     engine_build: EngineBuildModel
 
 
+class BenchmarkHistoryItem(_Response):
+    """A saved experiment without its samples (GET /benchmarks/{experiment_id} has them)."""
+
+    experiment_id: str
+    run_id: str
+    workload: str
+    input_size: int
+    thread_count: int
+    timestamp_utc: str
+    measured_runs: int
+    statistics: StatisticsModel
+
+
+MAX_HISTORY_PAGE_SIZE = 100
+MAX_HISTORY_OFFSET = 100_000
+
+
+class BenchmarkHistoryResponse(_Response):
+    items: list[BenchmarkHistoryItem] = Field(description="newest run first")
+    total: int = Field(description="saved experiments in total, across all pages")
+    limit: int
+    offset: int
+    time_unit: Literal["ms"]
+
+
 class ErrorBody(_Response):
     code: str = Field(examples=["engine_unavailable"])
     message: str

@@ -14,6 +14,8 @@ from typing import Any, Optional
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import InterfaceError, OperationalError, SQLAlchemyError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from aether_bench import (
@@ -24,13 +26,16 @@ from aether_bench import (
     ExecutableNotFoundError,
 )
 
-from .benchmarks import BenchmarkBusyError
 from .models import ErrorBody, ErrorResponse
 
 logger = logging.getLogger("aether.api.errors")
 
 # Seconds a client should wait before retrying a busy benchmark endpoint.
 _BUSY_RETRY_AFTER_S = 5
+
+
+class BenchmarkBusyError(Exception):
+    """Another benchmark is already running."""
 
 
 class AccessDeniedError(Exception):
@@ -49,6 +54,19 @@ _ENGINE_ERRORS: list[tuple[type[BenchmarkError], int, str, str]] = [
     (BenchmarkProcessError, 502, "engine_failed", "The C++ engine exited with an error."),
     (BenchmarkOutputError, 502, "engine_bad_output", "The C++ engine returned invalid data."),
 ]
+
+
+# Database failures the client can retry (server down, pool exhausted,
+# statement timeout) versus anything else (e.g. a constraint violation).
+_DATABASE_UNAVAILABLE = (OperationalError, InterfaceError, PoolTimeoutError)
+
+
+def engine_error_info(exc: BenchmarkError) -> tuple[int, str, str]:
+    """(HTTP status, error code, client-safe message) for an engine failure."""
+    for error_type, status, code, message in _ENGINE_ERRORS:
+        if isinstance(exc, error_type):
+            return status, code, message
+    return 502, "engine_error", "The C++ engine failed."
 
 
 def _request_id(request: Request) -> Optional[str]:
@@ -80,16 +98,28 @@ async def _benchmark_busy(request: Request, exc: BenchmarkBusyError) -> JSONResp
                           headers={"Retry-After": str(_BUSY_RETRY_AFTER_S)})
 
 
-async def _engine_error(request: Request, exc: Exception) -> JSONResponse:
-    for error_type, status, code, message in _ENGINE_ERRORS:
-        if isinstance(exc, error_type):
-            break
-    else:
-        status, code, message = 502, "engine_error", "The C++ engine failed."
+async def _engine_error(request: Request, exc: BenchmarkError) -> JSONResponse:
+    status, code, message = engine_error_info(exc)
     logger.error("engine call failed", extra={"fields": {
         "request_id": _request_id(request), "error_type": type(exc).__name__,
         "detail": str(exc), "stderr": getattr(exc, "stderr", None)}})
     return error_response(request, status, code, message)
+
+
+async def _database_error(request: Request, exc: SQLAlchemyError) -> JSONResponse:
+    driver_error = getattr(exc, "orig", None)
+    # SQLSTATE and constraint name identify the problem without logging SQL
+    # parameters; the reason line is redacted by the connection layer.
+    logger.error("database operation failed", extra={"fields": {
+        "request_id": _request_id(request), "path": request.url.path,
+        "error_type": type(driver_error or exc).__name__,
+        "sqlstate": getattr(driver_error, "sqlstate", None),
+        "constraint": getattr(getattr(driver_error, "diag", None), "constraint_name", None),
+        "reason": request.app.state.database.safe_reason(exc)}})
+    if isinstance(exc, _DATABASE_UNAVAILABLE):
+        return error_response(request, 503, "database_unavailable",
+                              "The database is unavailable; try again later.")
+    return error_response(request, 500, "database_error", "A database error occurred.")
 
 
 async def _http_error(request: Request, exc: StarletteHTTPException) -> JSONResponse:
@@ -114,7 +144,8 @@ async def _unhandled_error(request: Request, exc: Exception) -> JSONResponse:
 def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(AccessDeniedError, _access_denied)  # type: ignore[arg-type]
     app.add_exception_handler(BenchmarkBusyError, _benchmark_busy)  # type: ignore[arg-type]
-    app.add_exception_handler(BenchmarkError, _engine_error)
+    app.add_exception_handler(BenchmarkError, _engine_error)  # type: ignore[arg-type]
+    app.add_exception_handler(SQLAlchemyError, _database_error)  # type: ignore[arg-type]
     app.add_exception_handler(StarletteHTTPException, _http_error)  # type: ignore[arg-type]
     app.add_exception_handler(RequestValidationError, _validation_error)  # type: ignore[arg-type]
     app.add_exception_handler(Exception, _unhandled_error)
