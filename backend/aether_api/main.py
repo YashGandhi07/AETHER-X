@@ -12,6 +12,8 @@ import logging
 import re
 import time
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Awaitable, Callable, Optional
 
 from fastapi import FastAPI, Request, Response
@@ -20,8 +22,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import __version__
 from .benchmarks import BenchmarkService
 from .config import Settings
+from .database import Database
 from .errors import register_exception_handlers
 from .logging_config import configure_logging
+from .persistence import BenchmarkStore
 from .routes import api_v1
 from .system_info import SystemInfoProvider
 
@@ -34,16 +38,28 @@ _SAFE_REQUEST_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")
 
 def create_app(settings: Optional[Settings] = None,
                system_info_provider: Optional[SystemInfoProvider] = None,
-               benchmark_service: Optional[BenchmarkService] = None) -> FastAPI:
+               benchmark_service: Optional[BenchmarkService] = None,
+               database: Optional[Database] = None,
+               benchmark_store: Optional[BenchmarkStore] = None) -> FastAPI:
     settings = settings or Settings.from_environment()
     configure_logging(settings.log_level)
+    # Lazy: no connection is opened until a caller needs one.
+    database = database or Database.from_environment()
+    store = benchmark_store or BenchmarkStore(database)
 
-    app = FastAPI(title="AETHER X API", version=__version__)
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        yield
+        database.dispose()  # close pooled connections on shutdown
+
+    app = FastAPI(title="AETHER X API", version=__version__, lifespan=lifespan)
     app.state.settings = settings
     app.state.system_info_provider = (
         system_info_provider or SystemInfoProvider.from_engine(settings.engine_timeout_s))
     app.state.benchmark_service = (
-        benchmark_service or BenchmarkService.from_engine(settings.benchmark_timeout_s))
+        benchmark_service or BenchmarkService.from_engine(settings.benchmark_timeout_s, store))
+    app.state.database = database
+    app.state.benchmark_store = store
 
     # Read-only API without authentication yet: no credentials, GET only,
     # explicitly listed origins (validated in Settings; '*' is rejected).

@@ -21,7 +21,7 @@ from aether_bench import (
     ExecutableNotFoundError,
 )
 
-from .conftest import CountingFetch, FakeBenchmarkRun
+from .conftest import CountingFetch, FakeBenchmarkRun, RecordingStore
 
 URL = "/api/v1/benchmarks/run"
 VALID = {"workload": "vector_add_parallel", "size": 4096, "threads": 2,
@@ -122,7 +122,7 @@ def test_get_is_not_allowed(local_client: TestClient) -> None:
 @pytest.mark.parametrize("host", ["testclient", "203.0.113.5", "192.168.1.20", "10.0.0.1", "::2"])
 def test_remote_clients_are_refused(settings: Settings, fetch: CountingFetch,
                                     fake_run: FakeBenchmarkRun, host: str) -> None:
-    app = create_app(settings, SystemInfoProvider(fetch), BenchmarkService(fake_run))
+    app = create_app(settings, SystemInfoProvider(fetch), BenchmarkService(fake_run, RecordingStore()))  # type: ignore[arg-type]
     with TestClient(app, client=(host, 50000)) as remote:
         response = remote.post(URL, json=VALID)
     assert response.status_code == 403
@@ -133,7 +133,7 @@ def test_remote_clients_are_refused(settings: Settings, fetch: CountingFetch,
 @pytest.mark.parametrize("host", ["127.0.0.1", "127.0.0.2", "::1", "::ffff:127.0.0.1"])
 def test_loopback_clients_are_allowed(settings: Settings, fetch: CountingFetch,
                                       fake_run: FakeBenchmarkRun, host: str) -> None:
-    app = create_app(settings, SystemInfoProvider(fetch), BenchmarkService(fake_run))
+    app = create_app(settings, SystemInfoProvider(fetch), BenchmarkService(fake_run, RecordingStore()))  # type: ignore[arg-type]
     with TestClient(app, client=(host, 50000)) as local:
         assert local.post(URL, json=VALID).status_code == 200
 
@@ -148,7 +148,8 @@ def test_foreign_browser_origin_refused(local_client: TestClient, fake_run: Fake
 
 
 def test_disabled_by_configuration(fetch: CountingFetch, fake_run: FakeBenchmarkRun) -> None:
-    app = create_app(Settings(benchmarks_enabled=False), SystemInfoProvider(fetch), BenchmarkService(fake_run))
+    app = create_app(Settings(benchmarks_enabled=False), SystemInfoProvider(fetch),
+                     BenchmarkService(fake_run, RecordingStore()))  # type: ignore[arg-type]
     with TestClient(app, client=("127.0.0.1", 50000)) as local:
         response = local.post(URL, json=VALID)
     assert response.status_code == 403 and response.json()["error"]["code"] == "benchmarks_disabled"
@@ -185,7 +186,7 @@ def test_concurrent_request_is_rejected_with_429(local_client: TestClient) -> No
 
 
 def test_service_lock_is_non_blocking(fake_run: FakeBenchmarkRun) -> None:
-    service = BenchmarkService(fake_run)
+    service = BenchmarkService(fake_run, RecordingStore())  # type: ignore[arg-type]
     request = BenchmarkRunRequest(**VALID)
     assert service._lock.acquire(blocking=False)
     try:

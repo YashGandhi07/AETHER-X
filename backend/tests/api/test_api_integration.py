@@ -1,7 +1,8 @@
-"""Integration: the real API backed by the real C++ collector (aether_system_info).
+"""Integration: the real API backed by the real C++ engine.
 
 Skipped when the C++ engine is not built; AETHER_REQUIRE_INTEGRATION=1 makes
-that a failure instead.
+that a failure instead. The benchmark test saves into the PostgreSQL TEST
+database (never the development one) and is skipped when that is unreachable.
 """
 
 from __future__ import annotations
@@ -9,10 +10,15 @@ from __future__ import annotations
 import os
 import platform
 
+import uuid
+
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import func, select
 
 from aether_api.config import Settings
+from aether_api.database import Database
+from aether_api.db_models import BenchmarkRun, Experiment, RunStatus, TimingSample
 from aether_api.main import create_app
 from aether_bench import ExecutableNotFoundError, resolve_executable
 
@@ -50,14 +56,20 @@ def test_real_health_and_system() -> None:
         assert host["cpu_model"]  # detected, non-empty
 
 
-def test_real_benchmark_run_over_http() -> None:
-    """Runs the real C++ engine through the HTTP endpoint (small, fast workload)."""
+def test_real_benchmark_is_saved_exactly_and_retrievable(clean_test_db: Database) -> None:
+    """Runs the real C++ engine over HTTP (small, fast workload), then checks
+    the stored rows and the GET response against the POST response."""
     request = {"workload": "vector_add_parallel", "size": 65536, "threads": 2,
                "warmup_runs": 1, "measured_runs": 5}
-    with TestClient(create_app(Settings()), client=("127.0.0.1", 50000)) as client:
+    with TestClient(create_app(Settings(), database=clean_test_db),
+                    client=("127.0.0.1", 50000)) as client:
         response = client.post("/api/v1/benchmarks/run", json=request)
-    assert response.status_code == 200, response.text
-    body = response.json()
+        assert response.status_code == 200, response.text
+        body = response.json()
+        experiment_id = body["result"]["experiment_id"]
+        fetched = client.get(f"/api/v1/benchmarks/{experiment_id}")
+        history = client.get("/api/v1/benchmarks").json()
+
     assert body["status"] == "succeeded" and body["request"] == request
     result = body["result"]
     assert result["workload"] == "vector_add_parallel" and result["input_size"] == 65536
@@ -66,3 +78,19 @@ def test_real_benchmark_run_over_http() -> None:
     assert result["warmup_runs_executed"] >= 1
     assert body["host"]["logical_cpus"] == os.cpu_count()  # measured on this machine
     assert not body["host"]["cpu_model"].startswith("TEST_FIXTURE")
+
+    with clean_test_db.session() as session:
+        experiment = session.get(Experiment, uuid.UUID(experiment_id))
+        assert experiment is not None
+        assert experiment.run.status is RunStatus.SUCCEEDED
+        assert str(experiment.run.engine_run_id) == body["run_id"]
+        stored = session.scalars(select(TimingSample.duration_ms)
+                                 .where(TimingSample.experiment_id == experiment.id)
+                                 .order_by(TimingSample.sample_index)).all()
+        assert session.scalar(select(func.count()).select_from(BenchmarkRun)) == 1
+    # Bit-for-bit: the samples in PostgreSQL are the values the engine reported.
+    assert [v.hex() for v in stored] == [v.hex() for v in result["samples_ms"]]
+    assert experiment.median_ms == result["statistics"]["median"]
+
+    assert fetched.status_code == 200 and fetched.json() == body
+    assert history["total"] == 1 and history["items"][0]["experiment_id"] == experiment_id
