@@ -36,17 +36,28 @@ Requirements: a C++20 compiler (tested with Apple clang 21) and CMake 3.20 or ne
 ```bash
 cmake -S cpp -B cpp/build      # configure (Release by default)
 cmake --build cpp/build        # compile
-./cpp/build/aether_engine      # prints: AETHER X - C++ Engine Ready
+ctest --test-dir cpp/build     # run the C++ test suites
 ```
 
-Build output in `cpp/build/` is ignored by Git.
+This builds the command-line tools used by the backend (`aether_cpu_profile`,
+`aether_system_info`, `aether_run_benchmark`), the standalone benchmarks and
+the tests; `aether_engine` is only a build smoke test. Build output in
+`cpp/build/` is ignored by Git. See [`backend/README.md`](backend/README.md)
+for the Python packages, the API, PostgreSQL setup and the Python tests.
 
 ## Status
 
-Initial setup is complete:
+Implemented:
 
-- [x] Repository folder structure
-- [x] Git repository and `.gitignore`
-- [x] C++20 + CMake build with a minimal executable
+- [x] **C++20 CPU benchmark engine** (`cpp/`): `vector_add`, `std::thread`
+      parallel `vector_add`, and row- vs column-major matrix traversal. Every
+      output is checked against a reference; reports contain every sample,
+      summary statistics, and hardware and build metadata.
+- [x] **Python interface** (`backend/aether_bench`): runs the engine without a
+      shell and strictly validates its JSON reports.
+- [x] **FastAPI backend** (`backend/aether_api`, localhost only): health, system
+      metadata and benchmark execution endpoints.
+- [x] **PostgreSQL storage**: experiment schema with Alembic migrations; every
+      benchmark run is saved, with history and lookup endpoints.
 
-Everything else listed under Goals has not been implemented yet. The ML, GPU, backend, and frontend folders are currently empty placeholders.
+Not started yet: `gpu/`, `ml/`, `frontend/`, `infra/` and `docs/` are placeholders.

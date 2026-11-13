@@ -237,7 +237,7 @@ backend/.venv/bin/pytest backend
 
 This runs the `aether_bench` tests (fake executables, synthetic fixtures
 labelled `TEST_FIXTURE`), the API tests (FastAPI `TestClient` with a synthetic
-metadata provider) and two integration tests against the real C++ binaries.
+metadata provider) and three integration tests against the real C++ binaries.
 The integration tests are skipped when the engine is not built; set
 `AETHER_REQUIRE_INTEGRATION=1` to make that a failure instead.
 
