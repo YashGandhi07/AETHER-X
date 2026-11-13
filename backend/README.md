@@ -126,7 +126,7 @@ with `request_id`, `method`, `path` (no query string), `status` and
 
 The API holds one lazily connected SQLAlchemy engine (psycopg 3 driver). It is
 created at startup without contacting the server and disposed on shutdown, so
-the API and its unit tests run without PostgreSQL. No tables exist yet.
+the API and its unit tests run without PostgreSQL. Tables are managed by Alembic (below).
 
 | Variable | Default | Notes |
 |---|---|---|
@@ -159,6 +159,49 @@ with db.session() as session:  # commits on success, rolls back on exception
 db.dispose()
 ```
 
+## Experiment schema and migrations
+
+Tables (models in `aether_api/db_models.py`, migrations in `migrations/`):
+
+| Table | One row per | Key points |
+|---|---|---|
+| `environments` | distinct host + engine build | deduplicated by a `NULLS NOT DISTINCT` unique constraint over all metadata |
+| `benchmark_runs` | engine invocation | `status` (`running`/`succeeded`/`failed`/`timed_out`), the submitted `request` (JSONB), timings, error code; report fields required once succeeded |
+| `experiments` | engine result record | the engine's `experiment_id`, workload, configuration, engine statistics (ms) |
+| `timing_samples` | measured sample | `(experiment_id, sample_index)` key, `duration_ms` as `double precision` (bit-exact) |
+
+The database enforces integrity itself: CHECK constraints (including NaN and
+Infinity rejection), foreign keys (`ON DELETE CASCADE` from runs to samples,
+`RESTRICT` on environments) and a deferred constraint trigger that requires
+every experiment to have exactly `measured_runs` samples numbered `0..n-1` at
+`COMMIT`. Nothing writes to these tables yet.
+
+Apply and inspect migrations (from `backend/`; uses the `AETHER_DB_*` settings,
+so `alembic.ini` contains no URL or credentials):
+
+```bash
+cd backend
+.venv/bin/alembic upgrade head          # apply all migrations
+.venv/bin/alembic current               # revision the database is at
+.venv/bin/alembic history --verbose     # all revisions
+.venv/bin/alembic check                 # fails if models and migrations disagree
+.venv/bin/alembic upgrade head --sql    # print the SQL without connecting
+AETHER_DB_NAME=aether_x_test .venv/bin/alembic upgrade head   # another database
+```
+
+Creating a new migration after changing the models: run
+`.venv/bin/alembic revision --autogenerate -m "describe change"`, then review
+the generated file (autogenerate cannot see triggers or functions).
+
+Inspect the schema with `psql`:
+
+```bash
+PSQL="/opt/homebrew/opt/postgresql@18/bin/psql -h localhost -U aether_x_app -d aether_x_dev"
+$PSQL -c '\dt'                   # tables
+$PSQL -c '\d+ experiments'       # columns, constraints, indexes, triggers
+$PSQL -c "SELECT conrelid::regclass, conname FROM pg_constraint WHERE connamespace = 'public'::regnamespace AND contype IN ('c','f','u') ORDER BY 1, 2"
+```
+
 ## Run the tests
 
 ```bash
@@ -174,6 +217,12 @@ The integration tests are skipped when the engine is not built; set
 The database unit tests need no server. `tests/test_database_integration.py`
 runs read-only checks against the real local PostgreSQL and is skipped when it
 is unreachable; `AETHER_REQUIRE_DATABASE=1` makes that a failure.
+
+`tests/test_db_schema.py` tests the schema, constraints, relationships and
+migrations against a separate database (`AETHER_TEST_DB_NAME`, default
+`aether_x_test`; the name must end in `_test` because the tests rebuild its
+schema). It needs that database to exist with the same grants as
+`aether_x_dev` and a matching `~/.pgpass` line.
 
 ## Command-line profiler (no API)
 
