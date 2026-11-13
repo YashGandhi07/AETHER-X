@@ -12,7 +12,7 @@ AETHER X is an advanced AI/ML, GPU optimization, and software engineering projec
 
 ## Development environment
 
-- **Primary:** MacBook + Cursor (application, ML, and C++ development)
+- **Primary:** MacBook
 - **GPU work:** NVIDIA RTX 4060 Ti PC (CUDA kernels and GPU experiments)
 
 ## Repository layout
