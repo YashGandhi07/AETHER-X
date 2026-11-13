@@ -1,6 +1,8 @@
 # Runtime dependencies for the AETHER X API, fully pinned (direct + transitive)
-# for reproducible installs. Direct dependencies: fastapi, uvicorn.
-# Resolved with Python 3.14 on 2026-11-11.
+# for reproducible installs. Direct dependencies: fastapi, uvicorn, SQLAlchemy,
+# psycopg[binary] (psycopg-binary bundles libpq, so no system PostgreSQL client
+# library is needed).
+# Resolved with Python 3.14 on 2026-11-11; database packages added 2026-11-12.
 annotated-doc==0.0.6
 annotated-types==0.8.0
 anyio==4.16.0
@@ -9,8 +11,11 @@ fastapi==0.162.4
 h11==0.16.0
 idna==3.20
 opentelemetry-api==1.45.2
+psycopg==3.3.9
+psycopg-binary==3.3.9
 pydantic==2.14.3
 pydantic_core==2.50.4
+SQLAlchemy==2.1.8
 starlette==1.10.0
 typing-inspection==0.4.5
 typing_extensions==4.16.0

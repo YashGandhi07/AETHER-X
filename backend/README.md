@@ -5,7 +5,7 @@ Two Python packages on top of the C++ engine in `cpp/`:
 | Package | Purpose | Dependencies |
 |---|---|---|
 | `aether_bench` | Runs the compiled C++ tools as subprocesses and validates their JSON | standard library only |
-| `aether_api` | FastAPI HTTP service (`/api/v1/...`) built on `aether_bench` | `requirements.txt` |
+| `aether_api` | FastAPI HTTP service (`/api/v1/...`) built on `aether_bench`, plus the PostgreSQL connection layer | `requirements.txt` |
 
 ## Setup (from the repository root)
 
@@ -122,6 +122,43 @@ Logs are JSON lines on stderr (`aether.api.access` has one entry per request
 with `request_id`, `method`, `path` (no query string), `status` and
 `duration_ms`).
 
+## PostgreSQL connection (`aether_api/database.py`)
+
+The API holds one lazily connected SQLAlchemy engine (psycopg 3 driver). It is
+created at startup without contacting the server and disposed on shutdown, so
+the API and its unit tests run without PostgreSQL. No tables exist yet.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `AETHER_DB_HOST` | `localhost` | |
+| `AETHER_DB_PORT` | `5432` | |
+| `AETHER_DB_NAME` | `aether_x_dev` | plain identifier |
+| `AETHER_DB_USER` | `aether_x_app` | plain identifier |
+| `AETHER_DB_PASSWORD` | unset | when unset, libpq reads `~/.pgpass` (recommended; outside the repo) |
+| `AETHER_DB_CONNECT_TIMEOUT_S` | `5` | integer in [2, 60] |
+| `AETHER_DB_STATEMENT_TIMEOUT_MS` | `10000` | enforced by the server per statement |
+| `AETHER_DB_POOL_TIMEOUT_S` | `5` | wait for a free pooled connection, (0, 60] |
+
+Store the password in `~/.pgpass` (mode `600`), one line per target:
+
+```
+localhost:5432:aether_x_dev:aether_x_app:<password>
+```
+
+Never commit credentials; `.env` files are git-ignored. The password is
+excluded from `repr`, masked as `***` in URLs, and removed from connection
+error messages (`DatabaseUnavailableError`).
+
+```python
+from aether_api.database import Database
+
+db = Database.from_environment()
+db.check_connection()          # SELECT 1 -> round-trip ms, or DatabaseUnavailableError
+with db.session() as session:  # commits on success, rolls back on exception
+    ...
+db.dispose()
+```
+
 ## Run the tests
 
 ```bash
@@ -133,6 +170,10 @@ labelled `TEST_FIXTURE`), the API tests (FastAPI `TestClient` with a synthetic
 metadata provider) and two integration tests against the real C++ binaries.
 The integration tests are skipped when the engine is not built; set
 `AETHER_REQUIRE_INTEGRATION=1` to make that a failure instead.
+
+The database unit tests need no server. `tests/test_database_integration.py`
+runs read-only checks against the real local PostgreSQL and is skipped when it
+is unreachable; `AETHER_REQUIRE_DATABASE=1` makes that a failure.
 
 ## Command-line profiler (no API)
 
